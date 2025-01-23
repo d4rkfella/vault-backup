@@ -15,4 +15,7 @@ WORKDIR /app
 
 COPY backupVault.sh /app/backupVault.sh
 
+RUN chmod +x /app/backupVault.sh
+
+
 CMD  ["./backupVault.sh" ]
