@@ -10,11 +10,9 @@ RUN groupadd -g 999 appuser \
     && wget https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip && unzip vault_${VAULT_VERSION}_linux_amd64.zip && mv vault /usr/local/bin \
     && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install
 
-USER root
 WORKDIR /app
 
 COPY backupVault.sh /app/backupVault.sh
-
 RUN chmod +x /app/backupVault.sh
 
 USER appuser
