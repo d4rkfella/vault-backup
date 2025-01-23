@@ -11,7 +11,6 @@ RUN groupadd -g 999 appuser \
     && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install
 
 USER appuser
-
 WORKDIR /app
 
 COPY backupVault.sh /app/backupVault.sh
