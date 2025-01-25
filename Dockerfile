@@ -2,13 +2,11 @@ FROM ubuntu:25.04
 
 LABEL maintainer="Georgi Panov"
 
-ARG VAULT_VERSION="1.18.3"
+COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
+COPY --from=amazon/aws-cli:2.22.35@sha256:6977c83ae3dc99f28fcf8276b9ea5eec33833cd5be40574b34112e98113ec7a2 /usr/local/bin/aws /usr/local/bin/aws
 
 RUN groupadd -g 999 appuser \
-    && useradd -m -r -u 999 -g appuser appuser \
-    && apt update -y && apt install -y gnupg wget curl zip unzip \
-    && wget https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip && unzip vault_${VAULT_VERSION}_linux_amd64.zip && mv vault /usr/local/bin \
-    && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install
+    && useradd -m -r -u 999 -g appuser appuser
 
 WORKDIR /app
 
