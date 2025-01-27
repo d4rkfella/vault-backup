@@ -5,6 +5,8 @@ LABEL maintainer="Georgi Panov"
 USER root
 WORKDIR /tmp
 
+COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
+
 RUN apk update && apk add --no-cache \
     curl \
     ca-certificates \
@@ -12,11 +14,11 @@ RUN apk update && apk add --no-cache \
     catatonit \
     unzip && \
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.22.35.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install && \
-    rm -rf /tmp/*
+    rm -rf /tmp/* && \
+    aws --version && \
+    vault --version
 
 WORKDIR /app
-
-COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
 
 COPY entrypoint.sh /entrypoint.sh
 
