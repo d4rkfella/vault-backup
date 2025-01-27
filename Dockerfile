@@ -1,4 +1,4 @@
-FROM python:alpine3.21@sha256:f9d772b2b40910ee8de2ac2b15ff740b5f26b37fc811f6ada28fce71a2542b0e AS builder
+FROM python:3.11-alpine3.21 AS builder
 
 ARG AWS_CLI_VERSION=2.22.35
 
@@ -12,9 +12,9 @@ RUN apk add --no-cache git \
 RUN mkdir /aws && \
     git clone --single-branch --depth 1 -b ${AWS_CLI_VERSION} https://github.com/aws/aws-cli.git /aws && \
     cd /aws && \
-    pip install --upgrade pip setuptools && \
     python -m venv venv && \
     . venv/bin/activate && \
+    pip install pip setuptools && \
     ./scripts/installers/make-exe
 
 RUN unzip /aws/dist/awscli-exe.zip && \
