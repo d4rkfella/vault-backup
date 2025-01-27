@@ -18,7 +18,7 @@ RUN mkdir /aws && \
     ./scripts/installers/make-exe
 
 RUN unzip /aws/dist/awscli-exe.zip && \
-    ./aws/install --bin-dir /aws-cli-bin
+    ./aws/install --bin-dir /usr/local/bin/aws
 
 # Reduce image size: remove autocomplete and examples
 RUN rm -rf \
@@ -36,7 +36,9 @@ LABEL maintainer="Georgi Panov"
 USER root
 
 COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
-COPY --from=builder /usr/local/aws-cli /usr/local/bin/aws
+COPY --from=builder /usr/local/bin/aws /usr/local/bin/aws
+RUN chmod +x /usr/local/bin/aws
+RUN chmod +x /entrypoint.sh
 
 RUN apk update && apk add --no-cache \
     ca-certificates \
@@ -48,8 +50,6 @@ RUN apk update && apk add --no-cache \
 WORKDIR /app
 
 COPY entrypoint.sh /entrypoint.sh
-
-RUN chmod +x /entrypoint.sh
 
 USER nobody:nogroup
 
