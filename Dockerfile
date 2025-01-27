@@ -15,7 +15,7 @@ RUN apk update && apk add --no-cache \
     unzip && \
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.22.35.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install && \
     rm -rf /tmp/* && \
-    aws --version && \
+    /usr/local/bin/aws --version && \
     vault --version
 
 WORKDIR /app
