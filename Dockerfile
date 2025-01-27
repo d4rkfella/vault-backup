@@ -18,7 +18,7 @@ RUN mkdir /aws && \
     ./scripts/installers/make-exe
 
 RUN unzip /aws/dist/awscli-exe.zip && \
-    ./aws/install --bin-dir /usr/local/bin/aws
+    ./aws/install --bin-dir /aws-cli-bin
 
 # Reduce image size: remove autocomplete and examples
 RUN rm -rf \
@@ -37,14 +37,13 @@ USER root
 
 COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
 COPY --from=builder /usr/local/bin/aws /usr/local/bin/aws
-RUN chmod +x /usr/local/bin/aws
 
 RUN apk update && apk add --no-cache \
     ca-certificates \
     bash \
     catatonit \
-    aws --version && \
     vault --version
+RUN /aws-cli-bin/aws --version
 
 WORKDIR /app
 
