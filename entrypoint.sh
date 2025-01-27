@@ -1,5 +1,5 @@
 #!/bin/bash
-export VAULT_TOKEN=$(< /home/appuser/.aws/token)
+export VAULT_TOKEN=$(< /vault/secrets/token)
 DATE=`date +%Y-%m-%d-%H-%M-%S`
 vault operator raft snapshot save /tmp/vaultsnapshot-$DATE.snap
 
