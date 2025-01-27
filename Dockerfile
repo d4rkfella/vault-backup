@@ -12,9 +12,9 @@ RUN apk add --no-cache git \
 RUN mkdir /aws && \
     git clone --single-branch --depth 1 -b ${AWS_CLI_VERSION} https://github.com/aws/aws-cli.git /aws && \
     cd /aws && \
+    pip install --upgrade pip setuptools && \
     python -m venv venv && \
     . venv/bin/activate && \
-    pip install --upgrade pip setuptools && \
     ./scripts/installers/make-exe
 
 RUN unzip /aws/dist/awscli-exe.zip && \
