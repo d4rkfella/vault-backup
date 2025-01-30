@@ -46,6 +46,18 @@
       "matchUpdateTypes": ["patch"],
       "semanticCommitScope": "{{parentDir}}",
       "semanticCommitType": "fix"
+    },
+    {
+      "addLabels": ["renovate/container", "type/digest"],
+      "additionalBranchPrefix": "{{parentDir}}-",
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )",
+      "commitMessageTopic": "{{depName}}",
+      "labels": ["{{parentDir}}"],
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["Dockerfile"],
+      "matchUpdateTypes": ["digest"],
+      "semanticCommitScope": "{{parentDir}}",
+      "semanticCommitType": "chore"
     }
   ]
 }
