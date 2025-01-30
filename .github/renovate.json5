@@ -59,9 +59,8 @@
       "semanticCommitType": "chore"
     },
     {
-      "managers": ["dockerfile"],
+      "matchFiles": ["Dockerfile"],
       "depName": "python",
-      "versioning": "locked",
       "enabled": false
     }
   ]
