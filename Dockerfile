@@ -55,5 +55,5 @@ USER nobody:nogroup
 ENTRYPOINT ["/usr/bin/catatonit", "--", "/entrypoint.sh"]
 
 LABEL org.opencontainers.image.source="https://github.com/hashicorp/vault"
-org.opencontainers.image.title="vault-backup"
+LABEL org.opencontainers.image.title="vault-backup"
 LABEL org.opencontainers.image.authors="Georgi Panov"
