@@ -35,7 +35,7 @@ LABEL maintainer="Georgi Panov"
 
 USER root
 
-COPY --from=hashicorp/vault:1.18@sha256:8f1ba670da547c6af67be55609bd285c3ee3d8b73f88021adbfc43c82ca409e8 /bin/vault /usr/local/bin/vault
+COPY --from=hashicorp/vault:1.18.4@sha256:790a848da73ea8260e982e79b1e320e899836a24bf059c1e8484d040623b6b93 /bin/vault /usr/local/bin/vault
 RUN vault --version
 
 COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
