@@ -29,13 +29,11 @@ RUN rm -rf \
     find /usr/local/aws-cli/v2/current/dist/awscli/botocore/data -name examples-1.json -delete
 
 
-FROM alpine:3.21.2@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
-
-LABEL maintainer="Georgi Panov"
+FROM alpine:3.21
 
 USER root
 
-COPY --from=hashicorp/vault:1.18.4@sha256:790a848da73ea8260e982e79b1e320e899836a24bf059c1e8484d040623b6b93 /bin/vault /usr/local/bin/vault
+COPY --from=hashicorp/vault:1.18 /bin/vault /usr/local/bin/vault
 RUN vault --version
 
 COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
@@ -55,3 +53,7 @@ RUN chmod +x /entrypoint.sh
 USER nobody:nogroup
 
 ENTRYPOINT ["/usr/bin/catatonit", "--", "/entrypoint.sh"]
+
+LABEL org.opencontainers.image.source="https://github.com/hashicorp/vault"
+org.opencontainers.image.title="vault-backup"
+LABEL org.opencontainers.image.authors="Georgi Panov"
