@@ -57,6 +57,12 @@
       "matchUpdateTypes": ["digest"],
       "semanticCommitScope": "{{parentDir}}",
       "semanticCommitType": "chore"
+    },
+    {
+      "managers": ["dockerfile"],
+      "depName": "python",
+      "versioning": "locked",
+      "enabled": false
     }
   ]
 }
