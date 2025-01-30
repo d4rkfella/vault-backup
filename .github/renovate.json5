@@ -60,7 +60,7 @@
     },
     {
       "matchFiles": ["Dockerfile"],
-      "depName": "python",
+      "packageNames": ["python"],
       "enabled": false
     }
   ]
