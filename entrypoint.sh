@@ -18,12 +18,13 @@ else
     exit 1
 fi
 
+SNAPSHOTS=$(/usr/local/bin/aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3BUCKET/ | awk '{print $4}' | grep 'vaultsnapshot-' | sort -r)
+
 if [ -z "$SNAPSHOTS" ]; then
     echo "No snapshots found in S3. Exiting cleanup."
     exit 0
 fi
 
-SNAPSHOTS=$(/usr/local/bin/aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3BUCKET/ | awk '{print $4}' | grep 'vaultsnapshot-' | sort -r)
 
 COUNT=0
 for FILE in $SNAPSHOTS; do
