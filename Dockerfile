@@ -1,6 +1,6 @@
-FROM alpine:3.21
+FROM alpine:3.21.2
 
-COPY --from=hashicorp/vault:1.18 /bin/vault /usr/local/bin/vault
+COPY --from=hashicorp/vault:1.18.4 /bin/vault /usr/local/bin/vault
 RUN vault --version
 
 COPY --from=ghcr.io/d4rkfella/aws-cli-alpine:2.22.35 /usr/local/aws-cli/ /usr/local/aws-cli/
