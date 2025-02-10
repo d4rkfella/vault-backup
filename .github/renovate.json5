@@ -35,6 +35,49 @@
       "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
     },
     {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "commitMessagePrefix": "feat(github-action)!: ",
+      "commitMessageTopic": "{{depName}}",
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor"],
+      "semanticCommitType": "feat",
+      "semanticCommitScope": "github-action",
+      "commitMessageTopic": "{{depName}}",
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch"],
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "github-action",
+      "commitMessageTopic": "{{depName}}",
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "labels": ["type/major"]
+    },
+    {
+      "matchUpdateTypes": ["minor"],
+      "labels": ["type/minor"]
+    },
+    {
+      "matchUpdateTypes": ["patch"],
+      "labels": ["type/patch"]
+    },
+    {
+      "matchDatasources": ["docker"],
+      "addLabels": ["renovate/container"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["renovate/github-action"]
+    },
+    {
       "matchFiles": ["Dockerfile"],
       "packageNames": ["python"],
       "enabled": false
