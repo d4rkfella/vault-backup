@@ -12,51 +12,27 @@
   "suppressNotifications": ["prEditedNotification", "prIgnoreNotification"],
   "packageRules": [
     {
-      "addLabels": ["renovate/container", "type/major"],
-      "additionalBranchPrefix": "{{parentDir}}-",
-      "commitMessageExtra": " ( {{currentVersion}} → {{newVersion}} )",
-      "commitMessagePrefix": "feat({{parentDir}})!: ",
-      "commitMessageTopic": "{{depName}}",
-      "labels": ["{{parentDir}}"],
       "matchDatasources": ["docker"],
-      "matchFileNames": ["Dockerfile"],
-      "matchUpdateTypes": ["major"]
+      "matchUpdateTypes": ["major"],
+      "commitMessagePrefix": "feat(container)!: ",
+      "commitMessageTopic": "{{depName}}",
+      "commitMessageExtra": " ( {{currentVersion}} → {{newVersion}} )"
     },
     {
-      "addLabels": ["renovate/container", "type/minor"],
-      "additionalBranchPrefix": "{{parentDir}}-",
-      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )",
-      "commitMessageTopic": "{{depName}}",
-      "labels": ["{{parentDir}}"],
       "matchDatasources": ["docker"],
-      "matchFileNames": ["Dockerfile"],
       "matchUpdateTypes": ["minor"],
-      "semanticCommitScope": "{{parentDir}}",
-      "semanticCommitType": "feat"
+      "semanticCommitType": "feat",
+      "semanticCommitScope": "container",
+      "commitMessageTopic": "{{depName}}",
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
     },
     {
-      "addLabels": ["renovate/container", "type/patch"],
-      "additionalBranchPrefix": "{{parentDir}}-",
-      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )",
-      "commitMessageTopic": "{{depName}}",
-      "labels": ["{{parentDir}}"],
       "matchDatasources": ["docker"],
-      "matchFileNames": ["Dockerfile"],
       "matchUpdateTypes": ["patch"],
-      "semanticCommitScope": "{{parentDir}}",
-      "semanticCommitType": "fix"
-    },
-    {
-      "addLabels": ["renovate/container", "type/digest"],
-      "additionalBranchPrefix": "{{parentDir}}-",
-      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )",
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "container",
       "commitMessageTopic": "{{depName}}",
-      "labels": ["{{parentDir}}"],
-      "matchDatasources": ["docker"],
-      "matchFileNames": ["Dockerfile"],
-      "matchUpdateTypes": ["digest"],
-      "semanticCommitScope": "{{parentDir}}",
-      "semanticCommitType": "chore"
+      "commitMessageExtra": "( {{currentVersion}} → {{newVersion}} )"
     },
     {
       "matchFiles": ["Dockerfile"],
