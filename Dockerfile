@@ -1,4 +1,4 @@
-FROM alpine:3.21.2
+FROM alpine:3.21.3
 
 COPY --from=hashicorp/vault:1.18.4 /bin/vault /usr/local/bin/vault
 RUN vault --version
