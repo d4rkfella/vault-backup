@@ -38,6 +38,9 @@ env:
   RENOVATE_PLATFORM_COMMIT: true
   WORKFLOW_RENOVATE_VERSION: "${{ inputs.version || 'latest' }}"
 
+permissions:
+  contents: read
+
 jobs:
   renovate:
     name: Renovate
