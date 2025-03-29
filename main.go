@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -17,8 +16,11 @@ import (
 )
 
 func main() {
+	checkEnvVars()
+
 	vaultAddr := os.Getenv("VAULT_ADDR")
 	tokenFile := "/vault/secrets/token"
+
 	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		log.Fatalf("Failed to read Vault token: %v", err)
@@ -42,17 +44,14 @@ func main() {
 	}
 
 	s3Bucket := os.Getenv("S3BUCKET")
-	s3Endpoint := os.Getenv("S3_ENDPOINT")
 
-	sess, err := session.NewSession(&aws.Config{
-		Endpoint: aws.String(s3Endpoint),
-		Region:   aws.String("us-east-1"),
-	})
+	sess, err := session.NewSession()
 	if err != nil {
 		log.Fatalf("Failed to create AWS session: %v", err)
 	}
 
 	s3Client := s3.New(sess)
+
 	file, err := os.Open(snapshotPath)
 	if err != nil {
 		log.Fatalf("Failed to open snapshot file: %v", err)
@@ -74,8 +73,31 @@ func main() {
 	cleanupOldSnapshots(s3Client, s3Bucket)
 }
 
+func checkEnvVars() {
+	requiredVars := []string{
+		"VAULT_ADDR",
+		"S3BUCKET",
+		"AWS_ENDPOINT_URL",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+	}
+
+	for _, envVar := range requiredVars {
+		if os.Getenv(envVar) == "" {
+			log.Fatalf("Missing required environment variable: %s", envVar)
+		}
+	}
+
+	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
+		if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+			log.Fatalf("Missing AWS credentials: Either set AWS_SHARED_CREDENTIALS_FILE or AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY")
+		}
+	}
+}
+
 func cleanupOldSnapshots(s3Client *s3.S3, bucket string) {
 	snapshotRetention := 7
+
 	s3List, err := s3Client.ListObjectsV2(&s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 	})
