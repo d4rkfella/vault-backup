@@ -16,6 +16,10 @@ import (
 )
 
 func main() {
+	fmt.Println("Version:", version)
+	fmt.Println("Commit:", commit)
+	fmt.Println("Build Date:", date)
+	
 	checkEnvVars()
 
 	vaultAddr := os.Getenv("VAULT_ADDR")
