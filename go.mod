@@ -3,8 +3,10 @@ module github.com/d4rkfella/vault-backup
 go 1.24.1
 
 require (
+	github.com/KimMachineGun/automemlimit v0.7.1
 	github.com/aws/aws-sdk-go v1.55.6
 	github.com/hashicorp/vault/api v1.16.0
+	go.uber.org/automaxprocs v1.6.0
 )
 
 require (
@@ -22,6 +24,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/net v0.34.0 // indirect
