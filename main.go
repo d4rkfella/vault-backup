@@ -24,17 +24,15 @@ var (
 )
 
 func main() {
-	// Set GOMAXPROCS to match the Linux container CPU quota (if any)
-	undo, err := maxprocs.Set(maxprocs.Logger(zstdlog.NewStdLoggerWithLevel(log.With().Logger(), zerolog.InfoLevel).Printf))
+	undo, err := maxprocs.Set(maxprocs.Logger(log.Printf))
 	defer undo()
 	if err != nil {
-		log.Error().Err(err).Msg("failed to set GOMAXPROCS")
+		log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
 	}
 
-	// Set GOMEMLIMIT to match the Linux container Memory quota (if any)
 	memLimit, err := memlimit.SetGoMemLimitWithOpts(memlimit.WithProvider(memlimit.ApplyFallback(memlimit.FromCgroupHybrid, memlimit.FromSystem)))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to set GOMEMLIMIT")
+		log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
 	}
 
 	checkEnvVars()
@@ -53,11 +51,12 @@ func main() {
 	}
 	vaultClient.SetToken(strings.TrimSpace(string(token)))
 
-	log.Info().Msgf("Starting vault-backup")
-	log.Info().Msgf("Version: %s", version)
-	log.Info().Msgf("Commit: %s", commit)
-	log.Info().Msgf("Build date: %s", date)
-	log.Debug().Msgf("GOMEMLIMIT: %d bytes", memLimit)
+	log.Printf("INFO: Starting vault-backup")
+	log.Printf("INFO: Version: %s", version)
+	log.Printf("INFO: Commit: %s", commit)
+	log.Printf("INFO: Build date: %s", date)
+	
+	log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
 	
 	snapshotPath := fmt.Sprintf("/tmp/vaultsnapshot-%s.snap", time.Now().Format("2006-01-02-15-04-05"))
 	snapshotFile, err := os.Create(snapshotPath)
