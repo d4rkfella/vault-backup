@@ -185,37 +185,48 @@ func checkEnvVars() {
 }
 
 func cleanupOldSnapshots(s3Client *s3.S3, bucket string) {
-	snapshotRetention := 7
+    retentionStr := os.Getenv("VAULT_BACKUP_RETENTION")
+    snapshotRetention := 7
+    
+    if retentionStr != "" {
+        if retention, err := strconv.Atoi(retentionStr); err == nil && retention > 0 {
+            snapshotRetention = retention
+        } else {
+            log.Printf("WARNING: Invalid VAULT_BACKUP_RETENTION value '%s', using default 7", retentionStr)
+        }
+    }
 
-	s3List, err := s3Client.ListObjectsV2(&s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		log.Printf("WARNING: Failed to list S3 objects: %v", err)
-		return
-	}
+    log.Printf("DEBUG: Using snapshot retention: %d days", snapshotRetention)
 
-	var snapshots []string
-	for _, obj := range s3List.Contents {
-		if strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
-			snapshots = append(snapshots, *obj.Key)
-		}
-	}
+    s3List, err := s3Client.ListObjectsV2(&s3.ListObjectsV2Input{
+        Bucket: aws.String(bucket),
+    })
+    if err != nil {
+        log.Printf("WARNING: Failed to list S3 objects: %v", err)
+        return
+    }
 
-	if len(snapshots) <= snapshotRetention {
-		return
-	}
+    var snapshots []string
+    for _, obj := range s3List.Contents {
+        if strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
+            snapshots = append(snapshots, *obj.Key)
+        }
+    }
 
-	sort.Sort(sort.Reverse(sort.StringSlice(snapshots)))
-	for _, snapshot := range snapshots[snapshotRetention:] {
-		_, err := s3Client.DeleteObject(&s3.DeleteObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    aws.String(snapshot),
-		})
-		if err != nil {
-			log.Printf("WARNING: Failed to delete old snapshot %s: %v", snapshot, err)
-		} else {
-			log.Printf("INFO: Deleted old snapshot: %s", snapshot)
-		}
-	}
+    if len(snapshots) <= snapshotRetention {
+        return
+    }
+
+    sort.Sort(sort.Reverse(sort.StringSlice(snapshots)))
+    for _, snapshot := range snapshots[snapshotRetention:] {
+        _, err := s3Client.DeleteObject(&s3.DeleteObjectInput{
+            Bucket: aws.String(bucket),
+            Key:    aws.String(snapshot),
+        })
+        if err != nil {
+            log.Printf("WARNING: Failed to delete old snapshot %s: %v", snapshot, err)
+        } else {
+            log.Printf("INFO: Deleted old snapshot: %s", snapshot)
+        }
+    }
 }
