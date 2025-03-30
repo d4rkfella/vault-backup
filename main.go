@@ -23,7 +23,7 @@ var (
 	version = ""
 	commit  = ""
 	date    = ""
-	cpuUndo func() // Maintains CPU limit setting
+	cpuUndo func()
 )
 
 func main() {
@@ -37,7 +37,6 @@ func main() {
 }
 
 func setupSystemResources() {
-	// CPU limits - using package-level variable to prevent resets
 	var err error
 	cpuUndo, err = maxprocs.Set(maxprocs.Logger(log.Printf))
 	if err != nil {
@@ -46,7 +45,6 @@ func setupSystemResources() {
 		log.Printf("DEBUG: Initial GOMAXPROCS: %d", runtime.GOMAXPROCS(0))
 	}
 
-	// Memory limits - your original implementation
 	memLimit, err := memlimit.SetGoMemLimitWithOpts(
 		memlimit.WithProvider(
 			memlimit.ApplyFallback(
