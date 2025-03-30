@@ -39,23 +39,30 @@ func main() {
 }
 
 func setupSystemResources() {
-	undo, err := maxprocs.Set(maxprocs.Logger(log.Printf))
-	defer undo()
-	if err != nil {
-		log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
-	}
+    undo, err := maxprocs.Set(maxprocs.Logger(log.Printf))
+    defer undo()
+    if err != nil {
+        log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
+    }
 
-	memLimit, err := memlimit.SetGoMemLimitWithOpts(memlimit.WithProvider(memlimit.ApplyFallback(memlimit.FromCgroupHybrid, memlimit.FromSystem)))
-	if err != nil {
-		log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
-	} else {
-		log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
-	}
+    memLimit, err := memlimit.SetGoMemLimitWithOpts(
+        memlimit.WithProvider(
+            memlimit.ApplyFallback(
+                memlimit.FromCgroupHybrid,
+                memlimit.FromSystem,
+            ),
+        ),
+    )
+    if err != nil {
+        log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
+    } else {
+        log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
+    }
 
-	log.Printf("INFO: Starting vault-backup")
-	log.Printf("INFO: Version: %s", version)
-	log.Printf("INFO: Commit: %s", commit)
-	log.Printf("INFO: Build date: %s", date)
+    log.Printf("INFO: Starting vault-backup")
+    log.Printf("INFO: Version: %s", version)
+    log.Printf("INFO: Commit: %s", commit)
+    log.Printf("INFO: Build date: %s", date)
 }
 
 func setupVaultClient() *api.Client {
