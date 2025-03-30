@@ -25,34 +25,26 @@ var (
 )
 
 func main() {
-	// Initialize system resources
 	setupSystemResources()
 	
-	// Check environment variables
 	checkEnvVars()
 
-	// Vault client setup
 	vaultClient := setupVaultClient()
 
-	// Create snapshot
 	snapshotPath := createSnapshot(vaultClient)
 
-	// Upload to S3
 	uploadToS3(snapshotPath)
 
-	// Cleanup
 	cleanupLocalAndRemote(snapshotPath)
 }
 
 func setupSystemResources() {
-	// Set CPU limits
 	undo, err := maxprocs.Set(maxprocs.Logger(log.Printf))
 	defer undo()
 	if err != nil {
 		log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
 	}
 
-	// Set memory limits
 	memLimit, err := memlimit.SetGoMemLimitWithOpts(memlimit.WithProvider(memlimit.ApplyFallback(memlimit.FromCgroupHybrid, memlimit.FromSystem)))
 	if err != nil {
 		log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
@@ -101,12 +93,18 @@ func createSnapshot(vaultClient *api.Client) string {
 }
 
 func uploadToS3(snapshotPath string) {
-	// Configure AWS session
-	sess, err := session.NewSession(&aws.Config{
+	cfg := &aws.Config{
 		Endpoint: aws.String(os.Getenv("AWS_ENDPOINT_URL")),
 		Region:   aws.String(os.Getenv("AWS_REGION")),
-		Credentials: credentials.NewEnvCredentials(),
-	})
+	}
+
+	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
+		cfg.Credentials = credentials.NewEnvCredentials()
+	} else {
+		os.Setenv("AWS_SDK_LOAD_CONFIG", "1")
+	}
+
+	sess, err := session.NewSession(cfg)
 	if err != nil {
 		log.Fatalf("ERROR: Failed to create AWS session: %v", err)
 	}
@@ -133,18 +131,23 @@ func uploadToS3(snapshotPath string) {
 }
 
 func cleanupLocalAndRemote(snapshotPath string) {
-	// Remove local file
 	if err := os.Remove(snapshotPath); err != nil {
 		log.Printf("WARNING: Failed to remove local snapshot file: %v", err)
 	} else {
 		log.Printf("INFO: Removed local snapshot file")
 	}
 
-	// Cleanup old remote snapshots
 	s3Bucket := os.Getenv("S3BUCKET")
-	sess, err := session.NewSession(&aws.Config{
-		Credentials: credentials.NewEnvCredentials(),
-	})
+	cfg := &aws.Config{
+		Endpoint: aws.String(os.Getenv("AWS_ENDPOINT_URL")),
+		Region:   aws.String(os.Getenv("AWS_REGION")),
+	}
+
+	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
+		cfg.Credentials = credentials.NewEnvCredentials()
+	}
+
+	sess, err := session.NewSession(cfg)
 	if err != nil {
 		log.Printf("WARNING: Failed to create AWS session for cleanup: %v", err)
 		return
@@ -158,14 +161,15 @@ func checkEnvVars() {
 		"VAULT_ADDR",
 		"S3BUCKET",
 		"AWS_ENDPOINT_URL",
-		"AWS_REGION",
 	}
 
-	// Check for either credential file or direct credentials
 	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
 		requiredVars = append(requiredVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-	} else {
-		os.Setenv("AWS_SDK_LOAD_CONFIG", "1")
+	}
+
+	if os.Getenv("AWS_REGION") == "" {
+		os.Setenv("AWS_REGION", "auto")
+		log.Printf("INFO: Defaulting AWS_REGION=auto for Cloudflare R2")
 	}
 
 	for _, envVar := range requiredVars {
