@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,26 +24,50 @@ var (
 	version = ""
 	commit  = ""
 	date    = ""
-	cpuUndo func()
 )
 
 func main() {
-	setupSystemResources()
-	checkEnvVars()
+	if err := run(); err != nil {
+		log.Printf("ERROR: %v", err)
+		os.Exit(1)
+	}
+}
 
-	vaultClient := setupVaultClient()
-	snapshotPath := createSnapshot(vaultClient)
-	uploadToS3(snapshotPath)
-	cleanupLocalAndRemote(snapshotPath)
+func run() error {
+	setupSystemResources()
+
+	if err := checkEnvVars(); err != nil {
+		return err
+	}
+
+	vaultClient, err := setupVaultClient()
+	if err != nil {
+		return err
+	}
+
+	snapshotPath, err := createSnapshot(vaultClient)
+	if err != nil {
+		return err
+	}
+
+	awsSession, err := newAWSSession()
+	if err != nil {
+		return fmt.Errorf("failed to create AWS session: %w", err)
+	}
+
+	defer cleanupLocalAndRemote(snapshotPath, awsSession)
+
+	if err := uploadToS3(snapshotPath, awsSession); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func setupSystemResources() {
-	var err error
-	cpuUndo, err = maxprocs.Set(maxprocs.Logger(log.Printf))
+	_, err := maxprocs.Set(maxprocs.Logger(log.Printf))
 	if err != nil {
-		log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
-	} else {
-		log.Printf("DEBUG: Initial GOMAXPROCS: %d", runtime.GOMAXPROCS(0))
+		log.Printf("WARNING: Failed to set GOMAXPROCS: %v", err)
 	}
 
 	memLimit, err := memlimit.SetGoMemLimitWithOpts(
@@ -54,52 +79,75 @@ func setupSystemResources() {
 		),
 	)
 	if err != nil {
-		log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
+		log.Printf("WARNING: Failed to set GOMEMLIMIT: %v", err)
 	} else {
 		log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
 	}
 
-	log.Printf("INFO: Starting vault-backup")
-	log.Printf("INFO: Version: %s", version)
-	log.Printf("INFO: Commit: %s", commit)
-	log.Printf("INFO: Build date: %s", date)
+	log.Printf("INFO: Starting vault-backup (Version: %s, Commit: %s, Date: %s)", version, commit, date)
 }
 
-func setupVaultClient() *api.Client {
+func checkEnvVars() error {
+	requiredVars := []string{"VAULT_ADDR", "S3BUCKET", "AWS_ENDPOINT_URL"}
+
+	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
+		requiredVars = append(requiredVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+	}
+
+	if os.Getenv("AWS_REGION") == "" {
+		os.Setenv("AWS_REGION", "auto")
+		log.Printf("INFO: Defaulting AWS_REGION to auto")
+	}
+
+	var missingVars []string
+	for _, envVar := range requiredVars {
+		if os.Getenv(envVar) == "" {
+			missingVars = append(missingVars, envVar)
+		}
+	}
+
+	if len(missingVars) > 0 {
+		return fmt.Errorf("missing required environment variables: %s", strings.Join(missingVars, ", "))
+	}
+
+	return nil
+}
+
+func setupVaultClient() (*api.Client, error) {
 	vaultAddr := os.Getenv("VAULT_ADDR")
 	tokenFile := "/vault/secrets/token"
 
 	token, err := os.ReadFile(tokenFile)
 	if err != nil {
-		log.Fatalf("ERROR: Failed to read Vault token from %s: %v", tokenFile, err)
+		return nil, fmt.Errorf("failed to read Vault token: %w", err)
 	}
 
 	vaultClient, err := api.NewClient(&api.Config{Address: vaultAddr})
 	if err != nil {
-		log.Fatalf("ERROR: Failed to create Vault client: %v", err)
+		return nil, fmt.Errorf("failed to create Vault client: %w", err)
 	}
 
 	vaultClient.SetToken(strings.TrimSpace(string(token)))
-	return vaultClient
+	return vaultClient, nil
 }
 
-func createSnapshot(vaultClient *api.Client) string {
+func createSnapshot(vaultClient *api.Client) (string, error) {
 	snapshotPath := fmt.Sprintf("/tmp/vaultsnapshot-%s.snap", time.Now().Format("2006-01-02-15-04-05"))
 	snapshotFile, err := os.Create(snapshotPath)
 	if err != nil {
-		log.Fatalf("ERROR: Failed to create snapshot file: %v", err)
+		return "", fmt.Errorf("failed to create snapshot file: %w", err)
 	}
 	defer snapshotFile.Close()
 
 	if err := vaultClient.Sys().RaftSnapshot(snapshotFile); err != nil {
-		log.Fatalf("ERROR: Failed to create Vault snapshot: %v", err)
+		return "", fmt.Errorf("failed to create Vault snapshot: %w", err)
 	}
 
 	log.Printf("INFO: Created local snapshot at %s", snapshotPath)
-	return snapshotPath
+	return snapshotPath, nil
 }
 
-func uploadToS3(snapshotPath string) {
+func newAWSSession() (*session.Session, error) {
 	cfg := &aws.Config{
 		Endpoint: aws.String(os.Getenv("AWS_ENDPOINT_URL")),
 		Region:   aws.String(os.Getenv("AWS_REGION")),
@@ -109,17 +157,16 @@ func uploadToS3(snapshotPath string) {
 		cfg.Credentials = credentials.NewEnvCredentials()
 	}
 
-	sess, err := session.NewSession(cfg)
-	if err != nil {
-		log.Fatalf("ERROR: Failed to create AWS session: %v", err)
-	}
+	return session.NewSession(cfg)
+}
 
+func uploadToS3(snapshotPath string, sess *session.Session) error {
 	s3Client := s3.New(sess)
 	s3Bucket := os.Getenv("S3BUCKET")
 
 	file, err := os.Open(snapshotPath)
 	if err != nil {
-		log.Fatalf("ERROR: Failed to open snapshot file: %v", err)
+		return fmt.Errorf("failed to open snapshot file: %w", err)
 	}
 	defer file.Close()
 
@@ -129,104 +176,70 @@ func uploadToS3(snapshotPath string) {
 		Body:   file,
 	})
 	if err != nil {
-		log.Fatalf("ERROR: Failed to upload snapshot to S3: %v", err)
+		return fmt.Errorf("failed to upload snapshot to S3: %w", err)
 	}
 
 	log.Printf("INFO: Successfully uploaded snapshot to s3://%s/%s", s3Bucket, filepath.Base(snapshotPath))
+	return nil
 }
 
-func cleanupLocalAndRemote(snapshotPath string) {
+func cleanupLocalAndRemote(snapshotPath string, sess *session.Session) {
 	if err := os.Remove(snapshotPath); err != nil {
-		log.Printf("WARNING: Failed to remove local snapshot file: %v", err)
+		log.Printf("WARNING: Failed to remove local snapshot: %v", err)
 	} else {
-		log.Printf("INFO: Removed local snapshot file")
+		log.Printf("INFO: Removed local snapshot")
 	}
 
-	s3Bucket := os.Getenv("S3BUCKET")
-	cfg := &aws.Config{
-		Endpoint: aws.String(os.Getenv("AWS_ENDPOINT_URL")),
-		Region:   aws.String(os.Getenv("AWS_REGION")),
-	}
-
-	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
-		cfg.Credentials = credentials.NewEnvCredentials()
-	}
-
-	sess, err := session.NewSession(cfg)
-	if err != nil {
-		log.Printf("WARNING: Failed to create AWS session for cleanup: %v", err)
-		return
-	}
-
-	cleanupOldSnapshots(s3.New(sess), s3Bucket)
-}
-
-func checkEnvVars() {
-	requiredVars := []string{
-		"VAULT_ADDR",
-		"S3BUCKET",
-		"AWS_ENDPOINT_URL",
-	}
-
-	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
-		requiredVars = append(requiredVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-	}
-
-	if os.Getenv("AWS_REGION") == "" {
-		os.Setenv("AWS_REGION", "auto")
-		log.Printf("INFO: Defaulting AWS_REGION=auto for Cloudflare R2")
-	}
-
-	for _, envVar := range requiredVars {
-		if os.Getenv(envVar) == "" {
-			log.Fatalf("ERROR: Missing required environment variable: %s", envVar)
-		}
-	}
+	cleanupOldSnapshots(s3.New(sess), os.Getenv("S3BUCKET"))
 }
 
 func cleanupOldSnapshots(s3Client *s3.S3, bucket string) {
-    retentionStr := os.Getenv("VAULT_BACKUP_RETENTION")
-    snapshotRetention := 7
-    
-    if retentionStr != "" {
-        if retention, err := strconv.Atoi(retentionStr); err == nil && retention > 0 {
-            snapshotRetention = retention
-        } else {
-            log.Printf("WARNING: Invalid VAULT_BACKUP_RETENTION value '%s', using default 7", retentionStr)
-        }
-    }
+	retentionDays := 7
+	if retentionStr := os.Getenv("VAULT_BACKUP_RETENTION"); retentionStr != "" {
+		if retention, err := strconv.Atoi(retentionStr); err == nil && retention > 0 {
+			retentionDays = retention
+		} else {
+			log.Printf("WARNING: Invalid VAULT_BACKUP_RETENTION, using default 7")
+		}
+	}
 
-    log.Printf("DEBUG: Using snapshot retention: %d days", snapshotRetention)
+	s3List, err := s3Client.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+	if err != nil {
+		log.Printf("WARNING: Failed to list S3 objects: %v", err)
+		return
+	}
 
-    s3List, err := s3Client.ListObjectsV2(&s3.ListObjectsV2Input{
-        Bucket: aws.String(bucket),
-    })
-    if err != nil {
-        log.Printf("WARNING: Failed to list S3 objects: %v", err)
-        return
-    }
+	var snapshots []struct {
+		Key  string
+		Time time.Time
+	}
 
-    var snapshots []string
-    for _, obj := range s3List.Contents {
-        if strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
-            snapshots = append(snapshots, *obj.Key)
-        }
-    }
+	for _, obj := range s3List.Contents {
+		if strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
+			snapshots = append(snapshots, struct {
+				Key  string
+				Time time.Time
+			}{Key: *obj.Key, Time: *obj.LastModified})
+		}
+	}
 
-    if len(snapshots) <= snapshotRetention {
-        return
-    }
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Time.After(snapshots[j].Time) // Sort by most recent first
+	})
 
-    sort.Sort(sort.Reverse(sort.StringSlice(snapshots)))
-    for _, snapshot := range snapshots[snapshotRetention:] {
-        _, err := s3Client.DeleteObject(&s3.DeleteObjectInput{
-            Bucket: aws.String(bucket),
-            Key:    aws.String(snapshot),
-        })
-        if err != nil {
-            log.Printf("WARNING: Failed to delete old snapshot %s: %v", snapshot, err)
-        } else {
-            log.Printf("INFO: Deleted old snapshot: %s", snapshot)
-        }
-    }
+	if len(snapshots) <= retentionDays {
+		return
+	}
+
+	for _, snap := range snapshots[retentionDays:] {
+		_, err := s3Client.DeleteObject(&s3.DeleteObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(snap.Key),
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to delete old snapshot %s: %v", snap.Key, err)
+		} else {
+			log.Printf("INFO: Deleted old snapshot: %s", snap.Key)
+		}
+	}
 }
