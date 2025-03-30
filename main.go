@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -22,47 +23,48 @@ var (
 	version = ""
 	commit  = ""
 	date    = ""
+	cpuUndo func() // Maintains CPU limit setting
 )
 
 func main() {
 	setupSystemResources()
-	
 	checkEnvVars()
 
 	vaultClient := setupVaultClient()
-
 	snapshotPath := createSnapshot(vaultClient)
-
 	uploadToS3(snapshotPath)
-
 	cleanupLocalAndRemote(snapshotPath)
 }
 
 func setupSystemResources() {
-    undo, err := maxprocs.Set(maxprocs.Logger(log.Printf))
-    defer undo()
-    if err != nil {
-        log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
-    }
+	// CPU limits - using package-level variable to prevent resets
+	var err error
+	cpuUndo, err = maxprocs.Set(maxprocs.Logger(log.Printf))
+	if err != nil {
+		log.Printf("WARNING: failed to set GOMAXPROCS: %v", err)
+	} else {
+		log.Printf("DEBUG: Initial GOMAXPROCS: %d", runtime.GOMAXPROCS(0))
+	}
 
-    memLimit, err := memlimit.SetGoMemLimitWithOpts(
-        memlimit.WithProvider(
-            memlimit.ApplyFallback(
-                memlimit.FromCgroupHybrid,
-                memlimit.FromSystem,
-            ),
-        ),
-    )
-    if err != nil {
-        log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
-    } else {
-        log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
-    }
+	// Memory limits - your original implementation
+	memLimit, err := memlimit.SetGoMemLimitWithOpts(
+		memlimit.WithProvider(
+			memlimit.ApplyFallback(
+				memlimit.FromCgroupHybrid,
+				memlimit.FromSystem,
+			),
+		),
+	)
+	if err != nil {
+		log.Printf("WARNING: failed to set GOMEMLIMIT: %v", err)
+	} else {
+		log.Printf("DEBUG: GOMEMLIMIT: %d bytes", memLimit)
+	}
 
-    log.Printf("INFO: Starting vault-backup")
-    log.Printf("INFO: Version: %s", version)
-    log.Printf("INFO: Commit: %s", commit)
-    log.Printf("INFO: Build date: %s", date)
+	log.Printf("INFO: Starting vault-backup")
+	log.Printf("INFO: Version: %s", version)
+	log.Printf("INFO: Commit: %s", commit)
+	log.Printf("INFO: Build date: %s", date)
 }
 
 func setupVaultClient() *api.Client {
@@ -107,8 +109,6 @@ func uploadToS3(snapshotPath string) {
 
 	if os.Getenv("AWS_SHARED_CREDENTIALS_FILE") == "" {
 		cfg.Credentials = credentials.NewEnvCredentials()
-	} else {
-		os.Setenv("AWS_SDK_LOAD_CONFIG", "1")
 	}
 
 	sess, err := session.NewSession(cfg)
