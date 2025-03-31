@@ -33,15 +33,15 @@ var (
 )
 
 type Config struct {
-	VaultAddr        string
-	S3Bucket         string
-	AWSEndpoint      string
-	AWSRegion        string
-	RetentionDays    int
-	VaultTokenPath   string
-	SnapshotPath     string
-	MemoryLimitRatio float64
-	ReportPath       string
+	VaultAddr           string
+	S3Bucket            string
+	AWSEndpoint         string
+	AWSRegion           string
+	RetentionDays       int
+	VaultTokenPath      string
+	SnapshotPath        string
+	MemoryLimitRatio    float64
+	S3ChecksumAlgorithm string
 }
 
 type BackupReport struct {
@@ -165,15 +165,15 @@ func run(report *BackupReport) error {
 
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
-		VaultAddr:        getEnv("VAULT_ADDR", "http://localhost:8200"),
-		S3Bucket:         requireEnv("S3BUCKET"),
-		AWSEndpoint:      getEnv("AWS_ENDPOINT_URL", ""),
-		AWSRegion:        getEnv("AWS_REGION", "us-west-2"),
-		RetentionDays:    getEnvInt("VAULT_BACKUP_RETENTION", 7),
-		VaultTokenPath:   getEnv("VAULT_TOKEN_PATH", "/vault/secrets/token"),
-		SnapshotPath:     getEnv("SNAPSHOT_PATH", "/tmp"),
-		MemoryLimitRatio: getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
-		ReportPath:       getEnv("REPORT_PATH", ""),
+		VaultAddr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
+		S3Bucket:            requireEnv("S3BUCKET"),
+		AWSEndpoint:         getEnv("AWS_ENDPOINT_URL", ""),
+		AWSRegion:           getEnv("AWS_REGION", "us-west-2"),
+		RetentionDays:       getEnvInt("VAULT_BACKUP_RETENTION", 7),
+		VaultTokenPath:      getEnv("VAULT_TOKEN_PATH", "/vault/secrets/token"),
+		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
+		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
+		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -303,54 +303,35 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 }
 
 func uploadToS3(ctx context.Context, path, checksum string, sess *session.Session, cfg *Config) error {
-	// Check context before starting
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("upload canceled: %w", ctx.Err())
-	default:
-	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("file open: %w", err)
 	}
 	defer file.Close()
 
-	// Setup progress tracking
-	progressTicker := time.NewTicker(15 * time.Second)
-	defer progressTicker.Stop()
-	done := make(chan error)
-
-	go func() {
-		_, err = s3.New(sess).PutObjectWithContext(ctx, &s3.PutObjectInput{
-			Bucket:               aws.String(cfg.S3Bucket),
-			Key:                  aws.String(filepath.Base(path)),
-			Body:                 file,
-			ChecksumSHA256:       aws.String(checksum),
-			ServerSideEncryption: aws.String("AES256"),
-		})
-		done <- err
-	}()
-
-	for {
-		select {
-		case <-progressTicker.C:
-			stats, _ := file.Stat()
-			log.Info().
-				Int64("bytes_uploaded", stats.Size()).
-				Str("bucket", cfg.S3Bucket).
-				Msg("Upload progress")
-
-		case err := <-done:
-			if err != nil {
-				return fmt.Errorf("s3 put operation: %w", err)
-			}
-			return nil
-
-		case <-ctx.Done():
-			return fmt.Errorf("upload timeout: %w", ctx.Err())
-		}
+	putObjectInput := &s3.PutObjectInput{
+		Bucket:               aws.String(cfg.S3Bucket),
+		Key:                  aws.String(filepath.Base(path)),
+		Body:                 file,
+		ServerSideEncryption: aws.String("AES256"),
 	}
+
+	// Configure checksum based on environment variable
+	if cfg.S3ChecksumAlgorithm != "" {
+		putObjectInput.ChecksumAlgorithm = aws.String(cfg.S3ChecksumAlgorithm)
+		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using custom checksum algorithm")
+	} else {
+		// Fallback to SHA256 checksum
+		putObjectInput.ChecksumSHA256 = aws.String(checksum)
+	}
+
+	_, err = s3.New(sess).PutObjectWithContext(ctx, putObjectInput)
+	if err != nil {
+		return fmt.Errorf("s3 put operation: %w", err)
+	}
+
+	log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
+	return nil
 }
 
 func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) error {
