@@ -18,6 +18,7 @@ import (
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/hashicorp/vault/api"
@@ -29,7 +30,6 @@ import (
 var (
 	version = "dev"
 	commit  = "none"
-	date    = "unknown"
 )
 
 type Config struct {
@@ -42,6 +42,7 @@ type Config struct {
 	SnapshotPath        string
 	MemoryLimitRatio    float64
 	S3ChecksumAlgorithm string
+	DebugMode           bool
 }
 
 type BackupReport struct {
@@ -63,8 +64,15 @@ func (r BackupReport) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func main() {
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	cfg, _ := LoadConfig()
+
+	if cfg.DebugMode {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
+			Level(zerolog.DebugLevel)
+	} else {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).
+			Level(zerolog.InfoLevel)
+	}
 
 	report := BackupReport{}
 	startTime := time.Now()
@@ -94,7 +102,7 @@ func main() {
 		}
 	}()
 
-	if err := run(&report); err != nil {
+	if err := run(&report, cfg); err != nil {
 		report.Error = err.Error()
 		os.Exit(1)
 	}
@@ -102,12 +110,7 @@ func main() {
 	os.Exit(0)
 }
 
-func run(report *BackupReport) error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return fmt.Errorf("config error: %w", err)
-	}
-
+func run(report *BackupReport, cfg *Config) error {
 	setupSystemResources(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -174,6 +177,7 @@ func LoadConfig() (*Config, error) {
 		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
+		DebugMode:           getEnvBool("DEBUG_MODE", false),
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -184,6 +188,12 @@ func LoadConfig() (*Config, error) {
 }
 
 func setupSystemResources(cfg *Config) {
+	if cfg.DebugMode {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	} else {
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+
 	if _, err := maxprocs.Set(maxprocs.Logger(log.Printf)); err != nil {
 		log.Warn().Err(err).Msg("Failed to set GOMAXPROCS")
 	}
@@ -206,7 +216,6 @@ func setupSystemResources(cfg *Config) {
 	log.Info().
 		Str("version", version).
 		Str("commit", commit).
-		Str("date", date).
 		Str("go_version", runtime.Version()).
 		Msg("Starting vault-backup")
 }
@@ -270,8 +279,11 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 		Endpoint:         aws.String(cfg.AWSEndpoint),
 		Region:           aws.String(cfg.AWSRegion),
 		S3ForcePathStyle: aws.Bool(true),
-		Logger:           aws.NewDefaultLogger(),
-		LogLevel:         aws.LogLevel(aws.LogDebugWithSigning),
+	}
+
+	if cfg.DebugMode {
+		awsConfig.LogLevel = aws.LogLevel(aws.LogDebugWithHTTPBody)
+		awsConfig.Logger = aws.NewDefaultLogger()
 	}
 
 	creds := credentials.NewChainCredentials(
@@ -294,7 +306,22 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 		return nil, fmt.Errorf("session creation: %w", err)
 	}
 
-	// Validate credentials work
+	if cfg.DebugMode {
+		sess.Handlers.Send.PushFront(func(r *request.Request) {
+			safeReq := r.HTTPRequest.Clone(r.HTTPRequest.Context())
+
+			safeReq.Header.Del("Authorization")
+			safeReq.Header.Del("X-Amz-Security-Token")
+
+			log.Debug().
+				Str("service", r.ClientInfo.ServiceName).
+				Str("operation", r.Operation.Name).
+				Str("method", safeReq.Method).
+				Str("path", safeReq.URL.Path).
+				Msg("AWS API Request")
+		})
+	}
+
 	if _, err = sess.Config.Credentials.Get(); err != nil {
 		return nil, fmt.Errorf("credential validation: %w", err)
 	}
@@ -316,20 +343,48 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		ServerSideEncryption: aws.String("AES256"),
 	}
 
-	// Configure checksum based on environment variable
 	if cfg.S3ChecksumAlgorithm != "" {
 		putObjectInput.ChecksumAlgorithm = aws.String(cfg.S3ChecksumAlgorithm)
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using custom checksum algorithm")
 	} else {
-		// Fallback to SHA256 checksum
 		putObjectInput.ChecksumSHA256 = aws.String(checksum)
+	}
+
+	if cfg.DebugMode {
+		progressTicker := time.NewTicker(15 * time.Second)
+		defer progressTicker.Stop()
+		done := make(chan error)
+
+		go func() {
+			_, err = s3.New(sess).PutObjectWithContext(ctx, putObjectInput)
+			done <- err
+		}()
+
+		for {
+			select {
+			case <-progressTicker.C:
+				if stats, err := file.Stat(); err == nil {
+					log.Debug().
+						Int64("bytes_uploaded", stats.Size()).
+						Str("bucket", cfg.S3Bucket).
+						Msg("Upload progress")
+				}
+			case err := <-done:
+				if err != nil {
+					return fmt.Errorf("s3 put operation: %w", err)
+				}
+				log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("upload timeout: %w", ctx.Err())
+			}
+		}
 	}
 
 	_, err = s3.New(sess).PutObjectWithContext(ctx, putObjectInput)
 	if err != nil {
 		return fmt.Errorf("s3 put operation: %w", err)
 	}
-
 	log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
 	return nil
 }
@@ -337,8 +392,9 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) error {
 	cutoff := time.Now().AddDate(0, 0, -cfg.RetentionDays)
 	s3Client := s3.New(sess)
+	var snapshotsDeleted bool
 
-	return s3Client.ListObjectsV2PagesWithContext(ctx, &s3.ListObjectsV2Input{
+	err := s3Client.ListObjectsV2PagesWithContext(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(cfg.S3Bucket),
 	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
 		for _, obj := range page.Contents {
@@ -350,11 +406,24 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 					log.Warn().Err(err).Str("key", *obj.Key).Msg("Delete failed")
 					continue
 				}
+				snapshotsDeleted = true
 				log.Info().Str("key", *obj.Key).Msg("Deleted old snapshot")
 			}
 		}
 		return !lastPage
 	})
+
+	if err != nil {
+		return err
+	}
+
+	if snapshotsDeleted {
+		log.Info().Msg("Old snapshots cleaned up")
+	} else {
+		log.Info().Msg("No old snapshots found for cleanup")
+	}
+
+	return nil
 }
 
 func secureDelete(path string) {
@@ -400,6 +469,15 @@ func overwriteFile(path string) error {
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if boolValue, err := strconv.ParseBool(value); err == nil {
+			return boolValue
+		}
 	}
 	return defaultValue
 }
