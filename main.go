@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ type Config struct {
 	VaultTokenPath   string
 	SnapshotPath     string
 	MemoryLimitRatio float64
+	ReportPath       string
 }
 
 type BackupReport struct {
@@ -67,11 +69,28 @@ func main() {
 	report := BackupReport{}
 	startTime := time.Now()
 	defer func() {
+		if r := recover(); r != nil {
+			report.Error = fmt.Sprintf("panic: %v", r)
+			log.Error().
+				Str("stack", string(debug.Stack())).
+				Msg("Unexpected panic occurred")
+		}
+
 		report.Duration = time.Since(startTime)
 		if report.Success {
 			log.Info().EmbedObject(report).Msg("Backup completed")
 		} else {
 			log.Error().EmbedObject(report).Msg("Backup failed")
+		}
+
+		if report.Error != "" {
+			var errChain []string
+			for unwrapped := errors.New(report.Error); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+				errChain = append(errChain, unwrapped.Error())
+			}
+			log.Error().
+				Strs("error_chain", errChain).
+				Msg("Failure breakdown")
 		}
 	}()
 
@@ -94,33 +113,51 @@ func run(report *BackupReport) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	log.Debug().Msg("Initializing Vault client")
 	vaultClient, err := setupVaultClient(cfg)
 	if err != nil {
 		return fmt.Errorf("vault setup: %w", err)
 	}
+	log.Debug().Msg("Vault client initialized")
 
+	log.Info().Msg("Starting snapshot creation")
 	snapshotPath, checksum, err := createSnapshot(ctx, vaultClient, cfg)
 	if err != nil {
 		return fmt.Errorf("snapshot creation: %w", err)
 	}
 	defer secureDelete(snapshotPath)
+	log.Info().
+		Str("path", snapshotPath).
+		Str("checksum", checksum).
+		Msg("Snapshot created")
 
 	if fileInfo, err := os.Stat(snapshotPath); err == nil {
 		report.SnapshotSize = fileInfo.Size()
+		log.Debug().Int64("size_bytes", fileInfo.Size()).Msg("Snapshot file size")
 	}
 	report.Checksum = checksum
 
+	log.Debug().Msg("Creating AWS session")
 	awsSession, err := newAWSSession(cfg)
 	if err != nil {
 		return fmt.Errorf("aws session: %w", err)
 	}
+	log.Debug().Msg("AWS session established")
 
+	log.Info().Msg("Starting S3 upload")
+	uploadStart := time.Now()
 	if err := uploadToS3(ctx, snapshotPath, checksum, awsSession, cfg); err != nil {
 		return fmt.Errorf("s3 upload: %w", err)
 	}
+	log.Info().
+		Dur("duration", time.Since(uploadStart)).
+		Msg("S3 upload completed")
 
+	log.Debug().Msg("Starting snapshot cleanup")
 	if err := cleanupOldSnapshots(ctx, awsSession, cfg); err != nil {
 		log.Warn().Err(err).Msg("Snapshot cleanup failed")
+	} else {
+		log.Info().Msg("Old snapshots cleaned up")
 	}
 
 	return nil
@@ -136,6 +173,7 @@ func LoadConfig() (*Config, error) {
 		VaultTokenPath:   getEnv("VAULT_TOKEN_PATH", "/vault/secrets/token"),
 		SnapshotPath:     getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio: getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
+		ReportPath:       getEnv("REPORT_PATH", ""),
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -195,7 +233,7 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 func readVaultToken(path string) (string, error) {
 	tokenBytes, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("token file: %w", err)
+		return "", fmt.Errorf("token file read: %w", err)
 	}
 	defer func() {
 		for i := range tokenBytes {
@@ -224,7 +262,6 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 	}
 
 	checksum := fmt.Sprintf("%x", hash.Sum(nil))
-	log.Info().Str("path", snapshotPath).Str("checksum", checksum).Msg("Snapshot created")
 	return snapshotPath, checksum, nil
 }
 
@@ -233,45 +270,87 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 		Endpoint:         aws.String(cfg.AWSEndpoint),
 		Region:           aws.String(cfg.AWSRegion),
 		S3ForcePathStyle: aws.Bool(true),
+		Logger:           aws.NewDefaultLogger(),
+		LogLevel:         aws.LogLevel(aws.LogDebugWithSigning),
 	}
 
-	// Credential handling: supports both env vars and shared config
 	creds := credentials.NewChainCredentials(
 		[]credentials.Provider{
 			&credentials.EnvProvider{},
-			&credentials.SharedCredentialsProvider{},
+			&credentials.SharedCredentialsProvider{
+				Filename: os.Getenv("AWS_SHARED_CREDENTIALS_FILE"),
+				Profile:  os.Getenv("AWS_PROFILE"),
+			},
 		},
 	)
 
 	awsConfig.Credentials = creds
 
-	return session.NewSessionWithOptions(session.Options{
+	sess, err := session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 		Config:            *awsConfig,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("session creation: %w", err)
+	}
+
+	// Validate credentials work
+	if _, err = sess.Config.Credentials.Get(); err != nil {
+		return nil, fmt.Errorf("credential validation: %w", err)
+	}
+
+	return sess, nil
 }
 
 func uploadToS3(ctx context.Context, path, checksum string, sess *session.Session, cfg *Config) error {
+	// Check context before starting
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("upload canceled: %w", ctx.Err())
+	default:
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("file open: %w", err)
 	}
 	defer file.Close()
 
-	_, err = s3.New(sess).PutObjectWithContext(ctx, &s3.PutObjectInput{
-		Bucket:               aws.String(cfg.S3Bucket),
-		Key:                  aws.String(filepath.Base(path)),
-		Body:                 file,
-		ChecksumSHA256:       aws.String(checksum),
-		ServerSideEncryption: aws.String("AES256"),
-	})
+	// Setup progress tracking
+	progressTicker := time.NewTicker(15 * time.Second)
+	defer progressTicker.Stop()
+	done := make(chan error)
 
-	if err != nil {
-		return fmt.Errorf("s3 put: %w", err)
+	go func() {
+		_, err = s3.New(sess).PutObjectWithContext(ctx, &s3.PutObjectInput{
+			Bucket:               aws.String(cfg.S3Bucket),
+			Key:                  aws.String(filepath.Base(path)),
+			Body:                 file,
+			ChecksumSHA256:       aws.String(checksum),
+			ServerSideEncryption: aws.String("AES256"),
+		})
+		done <- err
+	}()
+
+	for {
+		select {
+		case <-progressTicker.C:
+			stats, _ := file.Stat()
+			log.Info().
+				Int64("bytes_uploaded", stats.Size()).
+				Str("bucket", cfg.S3Bucket).
+				Msg("Upload progress")
+
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("s3 put operation: %w", err)
+			}
+			return nil
+
+		case <-ctx.Done():
+			return fmt.Errorf("upload timeout: %w", ctx.Err())
+		}
 	}
-
-	log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
-	return nil
 }
 
 func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) error {
@@ -287,7 +366,7 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 					Bucket: aws.String(cfg.S3Bucket),
 					Key:    obj.Key,
 				}); err != nil {
-					log.Warn().Err(err).Str("key", *obj.Key).Msg("Failed to delete")
+					log.Warn().Err(err).Str("key", *obj.Key).Msg("Delete failed")
 					continue
 				}
 				log.Info().Str("key", *obj.Key).Msg("Deleted old snapshot")
@@ -298,8 +377,13 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 }
 
 func secureDelete(path string) {
+	if os.Getenv("DEBUG_MODE") == "true" {
+		log.Info().Str("path", path).Msg("DEBUG_MODE: Skipping deletion")
+		return
+	}
+
 	if err := os.Remove(path); err != nil {
-		log.Warn().Err(err).Str("path", path).Msg("Failed to delete")
+		log.Warn().Err(err).Str("path", path).Msg("Delete failed")
 		return
 	}
 
@@ -310,16 +394,13 @@ func secureDelete(path string) {
 	}
 }
 
-// Helper functions
 func overwriteFile(path string) error {
-	// Open file in write-only mode, truncate existing content
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	// Overwrite with random data 3 times
 	const passes = 3
 	for i := 0; i < passes; i++ {
 		if _, err := f.Seek(0, 0); err != nil {
