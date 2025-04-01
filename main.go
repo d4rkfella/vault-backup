@@ -527,8 +527,8 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 	if cfg.PushoverAPIKey == "" || cfg.PushoverUserKey == "" {
 		return errors.New("Pushover credentials not configured")
 	}
-        log.Info().Msg("Sending Pushover notification")
-	
+	log.Info().Msg("Sending Pushover notification")
+
 	message := &bytes.Buffer{}
 	fmt.Fprintf(message, "• Status: %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
 	fmt.Fprintf(message, "• Duration: %s\n", report.Duration.Round(time.Millisecond))
