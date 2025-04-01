@@ -42,14 +42,20 @@ type Config struct {
 	AWSEndpoint         string
 	AWSRegion           string
 	RetentionDays       int
-	VaultTokenPath      string
+	VaultKubernetesRole string
+	VaultSecretPath     string
 	SnapshotPath        string
 	MemoryLimitRatio    float64
 	S3ChecksumAlgorithm string
 	DebugMode           bool
 	SecureDelete        bool
-	PushoverAPIKey      string
-	PushoverUserKey     string
+}
+
+type VaultCredentials struct {
+	AWSAccessKey    string
+	AWSSecretKey    string
+	PushoverAPIKey  string
+	PushoverUserKey string
 }
 
 type BackupReport struct {
@@ -84,6 +90,7 @@ func main() {
 	report := BackupReport{}
 	startTime := time.Now()
 	exitCode := 0
+	var pushoverAPIKey, pushoverUserKey string
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -101,8 +108,12 @@ func main() {
 			log.Error().EmbedObject(report).Msg("Backup failed")
 		}
 
-		if err := sendPushoverNotification(cfg, report); err != nil {
-			log.Warn().Err(err).Msg("Failed to send Pushover notification")
+		if pushoverAPIKey != "" && pushoverUserKey != "" {
+			if err := sendPushoverNotification(pushoverAPIKey, pushoverUserKey, report); err != nil {
+				log.Warn().Err(err).Msg("Failed to send Pushover notification")
+			}
+		} else {
+			log.Debug().Msg("Skipping Pushover notification - credentials not found in Vault")
 		}
 
 		if report.Error != "" {
@@ -118,7 +129,7 @@ func main() {
 		os.Exit(exitCode)
 	}()
 
-	if err := run(&report, cfg); err != nil {
+	if err := run(&report, cfg, &pushoverAPIKey, &pushoverUserKey); err != nil {
 		report.Error = err.Error()
 		exitCode = 1
 		return
@@ -126,7 +137,7 @@ func main() {
 	report.Success = true
 }
 
-func run(report *BackupReport, cfg *Config) error {
+func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *string) error {
 	setupSystemResources(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -138,6 +149,14 @@ func run(report *BackupReport, cfg *Config) error {
 		return fmt.Errorf("vault setup: %w", err)
 	}
 	log.Debug().Msg("Vault client initialized")
+
+	log.Debug().Msg("Fetching credentials from Vault")
+	awsAccessKey, awsSecretKey, poAPIKey, poUserKey, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
+	if err != nil {
+		return fmt.Errorf("vault credentials: %w", err)
+	}
+	*pushoverAPIKey = poAPIKey
+	*pushoverUserKey = poUserKey
 
 	log.Info().Msg("Starting snapshot creation")
 	snapshotPath, checksum, err := createSnapshot(ctx, vaultClient, cfg)
@@ -157,7 +176,7 @@ func run(report *BackupReport, cfg *Config) error {
 	report.Checksum = checksum
 
 	log.Debug().Msg("Creating AWS session")
-	awsSession, err := newAWSSession(cfg)
+	awsSession, err := newAWSSession(cfg, awsAccessKey, awsSecretKey)
 	if err != nil {
 		return fmt.Errorf("aws session: %w", err)
 	}
@@ -192,14 +211,13 @@ func LoadConfig() (*Config, error) {
 		AWSEndpoint:         getEnv("AWS_ENDPOINT_URL", ""),
 		AWSRegion:           getEnv("AWS_REGION", "auto"),
 		RetentionDays:       getEnvInt("VAULT_BACKUP_RETENTION", 7),
-		VaultTokenPath:      getEnv("VAULT_TOKEN_PATH", "/vault/secrets/token"),
+		VaultKubernetesRole: getEnv("VAULT_K8S_ROLE", ""),
+		VaultSecretPath:     requireEnv("VAULT_SECRET_PATH"),
 		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
 		DebugMode:           getEnvBool("DEBUG_MODE", false),
 		SecureDelete:        getEnvBool("SECURE_DELETE", false),
-		PushoverAPIKey:      getEnv("PUSHOVER_API_TOKEN", ""),
-		PushoverUserKey:     getEnv("PUSHOVER_USER_KEY", ""),
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -243,11 +261,6 @@ func setupSystemResources(cfg *Config) {
 }
 
 func setupVaultClient(cfg *Config) (*api.Client, error) {
-	token, err := readVaultToken(cfg.VaultTokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("token read: %w", err)
-	}
-
 	client, err := api.NewClient(&api.Config{
 		Address:    cfg.VaultAddr,
 		Timeout:    30 * time.Second,
@@ -257,22 +270,26 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 		return nil, fmt.Errorf("client creation: %w", err)
 	}
 
-	client.SetToken(token)
-	return client, nil
-}
-
-func readVaultToken(path string) (string, error) {
-	tokenBytes, err := os.ReadFile(path)
+	saToken, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
 	if err != nil {
-		return "", fmt.Errorf("token file read: %w", err)
+		return nil, fmt.Errorf("failed to read service account token: %w", err)
 	}
-	defer func() {
-		for i := range tokenBytes {
-			tokenBytes[i] = 0
-		}
-	}()
 
-	return strings.TrimSpace(string(tokenBytes)), nil
+	data := map[string]interface{}{
+		"role": cfg.VaultKubernetesRole,
+		"jwt":  string(saToken),
+	}
+
+	resp, err := client.Logical().Write("auth/kubernetes/login", data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to login with Kubernetes auth: %w", err)
+	}
+	if resp == nil || resp.Auth == nil || resp.Auth.ClientToken == "" {
+		return nil, errors.New("no token returned from Kubernetes auth")
+	}
+
+	client.SetToken(resp.Auth.ClientToken)
+	return client, nil
 }
 
 func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, string, error) {
@@ -296,29 +313,44 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 	return snapshotPath, checksum, nil
 }
 
-func newAWSSession(cfg *Config) (*session.Session, error) {
+func getCredentialsFromVault(client *api.Client, secretPath string) (string, string, string, string, error) {
+	secret, err := client.Logical().Read(secretPath)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("vault read failed: %w", err)
+	}
+	if secret == nil || secret.Data == nil {
+		return "", "", "", "", errors.New("no data found in vault secret")
+	}
+
+	data := secret.Data
+	if v2Data, ok := data["data"].(map[string]interface{}); ok {
+		data = v2Data
+	}
+
+	awsAccessKey, ok1 := data["aws_access_key"].(string)
+	awsSecretKey, ok2 := data["aws_secret_key"].(string)
+	if !ok1 || !ok2 {
+		return "", "", "", "", errors.New("missing AWS credentials in vault secret")
+	}
+
+	poAPIKey, _ := data["pushover_api_token"].(string)
+	poUserKey, _ := data["pushover_user_id"].(string)
+
+	return awsAccessKey, awsSecretKey, poAPIKey, poUserKey, nil
+}
+
+func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, error) {
 	awsConfig := &aws.Config{
 		Endpoint:         aws.String(cfg.AWSEndpoint),
 		Region:           aws.String(cfg.AWSRegion),
 		S3ForcePathStyle: aws.Bool(true),
+		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
 	}
 
 	if cfg.DebugMode {
 		awsConfig.LogLevel = aws.LogLevel(aws.LogDebugWithHTTPBody)
 		awsConfig.Logger = aws.NewDefaultLogger()
 	}
-
-	creds := credentials.NewChainCredentials(
-		[]credentials.Provider{
-			&credentials.EnvProvider{},
-			&credentials.SharedCredentialsProvider{
-				Filename: os.Getenv("AWS_SHARED_CREDENTIALS_FILE"),
-				Profile:  os.Getenv("AWS_PROFILE"),
-			},
-		},
-	)
-
-	awsConfig.Credentials = creds
 
 	sess, err := session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
@@ -331,7 +363,6 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 	if cfg.DebugMode {
 		sess.Handlers.Send.PushFront(func(r *request.Request) {
 			safeReq := r.HTTPRequest.Clone(r.HTTPRequest.Context())
-
 			safeReq.Header.Del("Authorization")
 			safeReq.Header.Del("X-Amz-Security-Token")
 
@@ -347,6 +378,11 @@ func newAWSSession(cfg *Config) (*session.Session, error) {
 	if _, err = sess.Config.Credentials.Get(); err != nil {
 		return nil, fmt.Errorf("credential validation: %w", err)
 	}
+
+	log.Debug().
+		Str("region", *sess.Config.Region).
+		Str("endpoint", cfg.AWSEndpoint).
+		Msg("AWS session configured")
 
 	return sess, nil
 }
@@ -523,8 +559,8 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-func sendPushoverNotification(cfg *Config, report BackupReport) error {
-	if cfg.PushoverAPIKey == "" || cfg.PushoverUserKey == "" {
+func sendPushoverNotification(apiKey, userKey string, report BackupReport) error {
+	if apiKey == "" || userKey == "" {
 		return errors.New("Pushover credentials not configured")
 	}
 	log.Info().Msg("Sending Pushover notification")
@@ -544,8 +580,8 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	writer.WriteField("token", cfg.PushoverAPIKey)
-	writer.WriteField("user", cfg.PushoverUserKey)
+	writer.WriteField("token", apiKey)
+	writer.WriteField("user", userKey)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
 	writer.WriteField("html", "1")
