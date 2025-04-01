@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/dustin/go-humanize"
 	"github.com/hashicorp/vault/api"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -43,6 +47,8 @@ type Config struct {
 	MemoryLimitRatio    float64
 	S3ChecksumAlgorithm string
 	DebugMode           bool
+	PushoverAPIKey      string
+	PushoverUserKey     string
 }
 
 type BackupReport struct {
@@ -89,6 +95,10 @@ func main() {
 			log.Info().EmbedObject(report).Msg("Backup completed")
 		} else {
 			log.Error().EmbedObject(report).Msg("Backup failed")
+		}
+
+		if err := sendPushoverNotification(cfg, report); err != nil {
+			log.Warn().Err(err).Msg("Failed to send Pushover notification")
 		}
 
 		if report.Error != "" {
@@ -171,13 +181,15 @@ func LoadConfig() (*Config, error) {
 		VaultAddr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
 		S3Bucket:            requireEnv("S3BUCKET"),
 		AWSEndpoint:         getEnv("AWS_ENDPOINT_URL", ""),
-		AWSRegion:           getEnv("AWS_REGION", "us-west-2"),
+		AWSRegion:           getEnv("AWS_REGION", "auto"),
 		RetentionDays:       getEnvInt("VAULT_BACKUP_RETENTION", 7),
 		VaultTokenPath:      getEnv("VAULT_TOKEN_PATH", "/vault/secrets/token"),
 		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
 		DebugMode:           getEnvBool("DEBUG_MODE", false),
+		PushoverAPIKey:      getEnv("PUSHOVER_API_TOKEN", ""),
+		PushoverUserKey:     getEnv("PUSHOVER_USER_KEY", ""),
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -505,4 +517,56 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 		}
 	}
 	return defaultValue
+}
+
+func sendPushoverNotification(cfg *Config, report BackupReport) error {
+	if cfg.PushoverAPIKey == "" || cfg.PushoverUserKey == "" {
+		return errors.New("Pushover credentials not configured")
+	}
+
+	message := &bytes.Buffer{}
+	fmt.Fprintf(message, "Vault Backup %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
+	fmt.Fprintf(message, "• Duration: %s\n", report.Duration.Round(time.Millisecond))
+	fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
+	fmt.Fprintf(message, "• Checksum: %s\n", report.Checksum)
+
+	if report.Error != "" {
+		fmt.Fprintf(message, "\nErrors:\n")
+		for i, errMsg := range strings.Split(report.Error, ": ") {
+			fmt.Fprintf(message, "%d. %s\n", i+1, errMsg)
+		}
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	writer.WriteField("token", cfg.PushoverAPIKey)
+	writer.WriteField("user", cfg.PushoverUserKey)
+	writer.WriteField("title", "Vault Backup Report")
+	writer.WriteField("message", message.String())
+	writer.WriteField("priority", map[bool]string{true: "0", false: "1"}[report.Success])
+	writer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		"https://api.pushover.net/1/messages.json", body)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send notification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pushover API error: %s (%d)", string(body), resp.StatusCode)
+	}
+
+	return nil
 }
