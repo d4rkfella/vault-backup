@@ -47,6 +47,7 @@ type Config struct {
 	MemoryLimitRatio    float64
 	S3ChecksumAlgorithm string
 	DebugMode           bool
+	SecureDelete        bool
 	PushoverAPIKey      string
 	PushoverUserKey     string
 }
@@ -143,7 +144,7 @@ func run(report *BackupReport, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("snapshot creation: %w", err)
 	}
-	defer secureDelete(snapshotPath)
+	defer secureDelete(snapshotPath, cfg)
 	log.Info().
 		Str("path", snapshotPath).
 		Str("checksum", checksum).
@@ -172,10 +173,13 @@ func run(report *BackupReport, cfg *Config) error {
 		Msg("S3 upload completed")
 
 	log.Debug().Msg("Starting snapshot cleanup")
-	if err := cleanupOldSnapshots(ctx, awsSession, cfg); err != nil {
+	snapshotsDeleted, err := cleanupOldSnapshots(ctx, awsSession, cfg)
+	if err != nil {
 		log.Warn().Err(err).Msg("Snapshot cleanup failed")
-	} else {
+	} else if snapshotsDeleted {
 		log.Info().Msg("Old snapshots cleaned up")
+	} else {
+		log.Info().Msg("No old snapshots found for cleanup")
 	}
 
 	return nil
@@ -193,6 +197,7 @@ func LoadConfig() (*Config, error) {
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
 		DebugMode:           getEnvBool("DEBUG_MODE", false),
+		SecureDelete:        getEnvBool("SECURE_DELETE", false),
 		PushoverAPIKey:      getEnv("PUSHOVER_API_TOKEN", ""),
 		PushoverUserKey:     getEnv("PUSHOVER_USER_KEY", ""),
 	}
@@ -406,7 +411,7 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 	return nil
 }
 
-func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) error {
+func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) (bool, error) {
 	cutoff := time.Now().AddDate(0, 0, -cfg.RetentionDays)
 	s3Client := s3.New(sess)
 	var snapshotsDeleted bool
@@ -431,20 +436,14 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 	})
 
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	if snapshotsDeleted {
-		log.Info().Msg("Old snapshots cleaned up")
-	} else {
-		log.Info().Msg("No old snapshots found for cleanup")
-	}
-
-	return nil
+	return snapshotsDeleted, nil
 }
 
-func secureDelete(path string) {
-	if os.Getenv("DEBUG_MODE") == "true" {
+func secureDelete(path string, cfg *Config) {
+	if cfg.DebugMode {
 		log.Info().Str("path", path).Msg("DEBUG_MODE: Skipping deletion")
 		return
 	}
@@ -454,7 +453,7 @@ func secureDelete(path string) {
 		return
 	}
 
-	if os.Getenv("SECURE_DELETE") == "true" {
+	if cfg.SecureDelete {
 		if err := overwriteFile(path); err != nil {
 			log.Warn().Err(err).Str("path", path).Msg("Secure delete failed")
 		}
@@ -528,18 +527,17 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 	if cfg.PushoverAPIKey == "" || cfg.PushoverUserKey == "" {
 		return errors.New("Pushover credentials not configured")
 	}
-
+        log.Info().Msg("Sending Pushover notification")
+	
 	message := &bytes.Buffer{}
-	fmt.Fprintf(message, "Vault Backup %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
+	fmt.Fprintf(message, "• Status: %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
 	fmt.Fprintf(message, "• Duration: %s\n", report.Duration.Round(time.Millisecond))
-	fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
-	fmt.Fprintf(message, "• Checksum: %s\n", report.Checksum)
 
-	if report.Error != "" {
-		fmt.Fprintf(message, "\nErrors:\n")
-		for i, errMsg := range strings.Split(report.Error, ": ") {
-			fmt.Fprintf(message, "%d. %s\n", i+1, errMsg)
-		}
+	if report.Success {
+		fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
+		fmt.Fprintf(message, "• Checksum: %s\n", report.Checksum)
+	} else if report.Error != "" {
+		fmt.Fprintf(message, "\nFailure Reason:\n%s\n", report.Error)
 	}
 
 	body := &bytes.Buffer{}
@@ -549,7 +547,10 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 	writer.WriteField("user", cfg.PushoverUserKey)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
-	writer.WriteField("priority", map[bool]string{true: "0", false: "1"}[report.Success])
+	writer.WriteField("priority", map[bool]string{
+		true:  "0",
+		false: "1",
+	}[report.Success])
 	writer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
