@@ -82,12 +82,15 @@ func main() {
 
 	report := BackupReport{}
 	startTime := time.Now()
+	exitCode := 0
+
 	defer func() {
 		if r := recover(); r != nil {
 			report.Error = fmt.Sprintf("panic: %v", r)
 			log.Error().
 				Str("stack", string(debug.Stack())).
 				Msg("Unexpected panic occurred")
+			exitCode = 1
 		}
 
 		report.Duration = time.Since(startTime)
@@ -110,14 +113,16 @@ func main() {
 				Strs("error_chain", errChain).
 				Msg("Failure breakdown")
 		}
+		
+		os.Exit(exitCode)
 	}()
 
 	if err := run(&report, cfg); err != nil {
 		report.Error = err.Error()
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	report.Success = true
-	os.Exit(0)
 }
 
 func run(report *BackupReport, cfg *Config) error {
