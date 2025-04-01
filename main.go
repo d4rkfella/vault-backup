@@ -113,7 +113,7 @@ func main() {
 				Strs("error_chain", errChain).
 				Msg("Failure breakdown")
 		}
-		
+
 		os.Exit(exitCode)
 	}()
 
