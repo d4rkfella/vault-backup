@@ -537,7 +537,8 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 		fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
 		fmt.Fprintf(message, "• Checksum: %s\n", report.Checksum)
 	} else if report.Error != "" {
-		fmt.Fprintf(message, "\nFailure Reason:\n%s\n", report.Error)
+		formattedError := strings.ReplaceAll(report.Error, ": ", "\n• ")
+		fmt.Fprintf(message, "• <b>Failure Reason:</b>\n<pre>%s</pre>", formattedError)
 	}
 
 	body := &bytes.Buffer{}
@@ -547,6 +548,7 @@ func sendPushoverNotification(cfg *Config, report BackupReport) error {
 	writer.WriteField("user", cfg.PushoverUserKey)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
+	writer.WriteField("html", "1")
 	writer.WriteField("priority", map[bool]string{
 		true:  "0",
 		false: "1",
