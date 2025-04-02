@@ -7,12 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
-	"hash/crc32"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -68,7 +64,6 @@ type BackupReport struct {
 	Success      bool          `json:"success"`
 	Duration     time.Duration `json:"duration_ms"`
 	SnapshotSize int64         `json:"size_bytes"`
-	Checksum     string        `json:"checksum"`
 	Error        string        `json:"error,omitempty"`
 }
 
@@ -76,7 +71,6 @@ func (r BackupReport) MarshalZerologObject(e *zerolog.Event) {
 	e.Bool("success", r.Success)
 	e.Dur("duration_ms", r.Duration)
 	e.Int64("size_bytes", r.SnapshotSize)
-	e.Str("checksum", r.Checksum)
 	if r.Error != "" {
 		e.Str("error", r.Error)
 	}
@@ -165,21 +159,19 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 	*pushoverUserKey = poUserKey
 
 	log.Info().Msg("Starting snapshot creation")
-	snapshotPath, checksum, err := createSnapshot(ctx, vaultClient, cfg)
+	snapshotPath, err := createSnapshot(ctx, vaultClient, cfg)
 	if err != nil {
 		return fmt.Errorf("snapshot creation: %w", err)
 	}
 	defer secureDelete(snapshotPath, cfg)
 	log.Info().
 		Str("path", snapshotPath).
-		Str("checksum", checksum).
 		Msg("Snapshot created")
 
 	if fileInfo, err := os.Stat(snapshotPath); err == nil {
 		report.SnapshotSize = fileInfo.Size()
 		log.Debug().Int64("size_bytes", fileInfo.Size()).Msg("Snapshot file size")
 	}
-	report.Checksum = checksum
 
 	log.Debug().Msg("Creating AWS session")
 	awsSession, err := newAWSSession(cfg, awsAccessKey, awsSecretKey)
@@ -190,7 +182,7 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 
 	log.Info().Msg("Starting S3 upload")
 	uploadStart := time.Now()
-	if err := uploadToS3(ctx, snapshotPath, checksum, awsSession, cfg); err != nil {
+	if err := uploadToS3(ctx, snapshotPath, awsSession, cfg); err != nil {
 		return fmt.Errorf("s3 upload: %w", err)
 	}
 	log.Info().
@@ -298,37 +290,27 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 	return client, nil
 }
 
-func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, string, error) {
+func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, error) {
 	snapshotPath := filepath.Join(cfg.SnapshotPath, fmt.Sprintf("vaultsnapshot-%s.snap", time.Now().Format("20060102-150405")))
 
 	file, err := os.Create(snapshotPath)
 	if err != nil {
-		return "", "", fmt.Errorf("file creation: %w", err)
+		return "", fmt.Errorf("file creation: %w", err)
 	}
 	defer file.Close()
 
-	var h hash.Hash
-	if cfg.S3ChecksumAlgorithm == "CRC32" {
-		h = crc32.NewIEEE()
-	} else {
-		h = sha256.New()
-	}
-
-	writer := io.MultiWriter(file, h)
-
-	if err := client.Sys().RaftSnapshotWithContext(ctx, writer); err != nil {
+	if err := client.Sys().RaftSnapshotWithContext(ctx, file); err != nil {
 		os.Remove(snapshotPath)
-		return "", "", fmt.Errorf("raft snapshot: %w", err)
+		return "", fmt.Errorf("raft snapshot: %w", err)
 	}
 
 	valid, err := verifyInternalChecksums(snapshotPath)
 	if err != nil || !valid {
 		os.Remove(snapshotPath)
-		return "", "", fmt.Errorf("internal checksum verification failed: %w", err)
+		return "", fmt.Errorf("internal checksum verification failed: %w", err)
 	}
 
-	checksum := fmt.Sprintf("%x", h.Sum(nil))
-	return snapshotPath, checksum, nil
+	return snapshotPath, nil
 }
 
 func verifyInternalChecksums(snapshotPath string) (bool, error) {
@@ -498,7 +480,7 @@ func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, 
 	return sess, nil
 }
 
-func uploadToS3(ctx context.Context, path, checksum string, sess *session.Session, cfg *Config) error {
+func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Config) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("file open: %w", err)
@@ -512,29 +494,13 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		ServerSideEncryption: aws.String("AES256"),
 	}
 
-	checksumBytes, err := hex.DecodeString(checksum)
-	if err != nil {
-		return fmt.Errorf("invalid checksum format: %w", err)
-	}
-
-	base64Checksum := base64.StdEncoding.EncodeToString(checksumBytes)
 	switch cfg.S3ChecksumAlgorithm {
 	case "CRC32":
-		if len(checksumBytes) != crc32.Size {
-			return fmt.Errorf("invalid CRC32 checksum length: expected %d bytes, got %d",
-				crc32.Size, len(checksumBytes))
-		}
-		putObjectInput.ChecksumCRC32 = aws.String(base64Checksum)
-		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using CRC32 checksum")
-
+		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
+		log.Debug().Msg("Using AWS-computed CRC32 checksum")
 	case "SHA256":
-		if len(checksumBytes) != sha256.Size {
-			return fmt.Errorf("invalid SHA256 checksum length: expected %d bytes, got %d",
-				sha256.Size, len(checksumBytes))
-		}
-		putObjectInput.ChecksumSHA256 = aws.String(base64Checksum)
-		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using SHA256 checksum")
-
+		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmSha256)
+		log.Debug().Msg("Using AWS-computed SHA256 checksum")
 	default:
 		return fmt.Errorf("unsupported checksum algorithm: %s", cfg.S3ChecksumAlgorithm)
 	}
@@ -721,7 +687,6 @@ func sendPushoverNotification(apiKey, userKey string, report BackupReport) error
 
 	if report.Success {
 		fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
-		fmt.Fprintf(message, "• Checksum: %s\n", report.Checksum)
 	} else if report.Error != "" {
 		formattedError := strings.ReplaceAll(report.Error, ": ", "\n• ")
 		fmt.Fprintf(message, "• <b>Failure Reason:</b>\n<pre>%s</pre>", formattedError)
