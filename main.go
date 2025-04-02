@@ -198,19 +198,8 @@ func run(report *BackupReport, cfg *Config) error {
 		zeroBytes(creds.PushoverUser)
 	}()
 
-	poAPI := bytes.Clone(creds.PushoverAPI)
-	poUser := bytes.Clone(creds.PushoverUser)
-	defer func() {
-		zeroBytes(poAPI)
-		zeroBytes(poUser)
-	}()
-
-	awsAccess := string(bytes.Clone(creds.AWSAccess))
-	awsSecret := string(bytes.Clone(creds.AWSSecret))
-	defer func() {
-		zeroBytes([]byte(awsAccess))
-		zeroBytes([]byte(awsSecret))
-	}()
+	awsAccess := secureString(bytes.Clone(creds.AWSAccess))
+	awsSecret := secureString(bytes.Clone(creds.AWSSecret))
 
 	log.Info().Str("component", "snapshot").Msg("Creation started")
 	snapshotPath, err := createSnapshot(ctx, vaultClient, cfg)
@@ -239,12 +228,19 @@ func run(report *BackupReport, cfg *Config) error {
 		log.Warn().Err(err).Msg("Cleanup completed with errors")
 	}
 
-	if len(poAPI) > 0 && len(poUser) > 0 {
-		if err := sendPushoverNotification(poAPI, poUser, *report); err != nil {
-			log.Warn().Err(err).Msg("Pushover notification failed")
+	if len(creds.PushoverAPI) > 0 || len(creds.PushoverUser) > 0 {
+		if len(creds.PushoverAPI) == 0 || len(creds.PushoverUser) == 0 {
+			log.Warn().Msg("Incomplete Pushover credentials - need both API token and user key")
+		} else {
+			pushoverAPI := secureString(bytes.Clone(creds.PushoverAPI))
+			pushoverUser := secureString(bytes.Clone(creds.PushoverUser))
+
+			if err := sendPushoverNotification(pushoverAPI, pushoverUser, *report); err != nil {
+				log.Warn().Err(err).Msg("Pushover notification failed")
+			}
 		}
 	} else {
-		log.Debug().Msg("Skipping Pushover - missing credentials")
+		log.Warn().Msg("Pushover credentials not provided in Vault - skipping notifications")
 	}
 
 	return nil
@@ -855,36 +851,26 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error {
-	if len(apiKey) != 30 || len(userKey) != 30 {
-		return fmt.Errorf("invalid credential length (api:%d user:%d)",
-			len(apiKey), len(userKey))
+func sendPushoverNotification(apiKey, userKey string, report BackupReport) error {
+
+	if !isValidPushoverToken(apiKey) {
+		errMsg := "invalid Pushover API token"
+		log.Warn().
+			Str("api_key_prefix", redactKey(apiKey)).
+			Int("length", len(apiKey)).
+			Msg(errMsg)
+		return fmt.Errorf("%s (prefix:%s length:%d)",
+			errMsg, redactKey(apiKey), len(apiKey))
 	}
 
-	apiClone := bytes.Clone(apiKey)
-	userClone := bytes.Clone(userKey)
-	defer zeroBytes(apiClone)
-	defer zeroBytes(userClone)
-
-	apiKeyStr := string(apiClone)
-	userKeyStr := string(userClone)
-	defer func() {
-		zeroBytes([]byte(apiKeyStr))
-		zeroBytes([]byte(userKeyStr))
-	}()
-
-	if !isValidPushoverToken(apiKeyStr) {
-		log.Debug().
-			Str("api_key_prefix", redactKey(apiKeyStr)).
-			Msg("Invalid Pushover API token format")
-		return fmt.Errorf("invalid API token format")
-	}
-
-	if !isValidPushoverUser(userKeyStr) {
-		log.Debug().
-			Str("user_key_prefix", redactKey(userKeyStr)).
-			Msg("Invalid Pushover user key format")
-		return fmt.Errorf("invalid user key format")
+	if !isValidPushoverUser(userKey) {
+		errMsg := "invalid Pushover user key"
+		log.Warn().
+			Str("user_key_prefix", redactKey(userKey)).
+			Int("length", len(userKey)).
+			Msg(errMsg)
+		return fmt.Errorf("%s (prefix:%s length:%d)",
+			errMsg, redactKey(userKey), len(userKey))
 	}
 
 	log.Info().Msg("Sending Pushover notification")
@@ -905,8 +891,8 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	writer.WriteField("token", apiKeyStr)
-	writer.WriteField("user", userKeyStr)
+	writer.WriteField("token", apiKey)
+	writer.WriteField("user", userKey)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
 	writer.WriteField("html", "1")
@@ -954,10 +940,10 @@ func isValidPushoverUser(userKey string) bool {
 }
 
 func redactKey(key string) string {
-	if len(key) < 4 {
+	if len(key) < 6 {
 		return "***"
 	}
-	return key[:2] + "***" + key[len(key)-2:]
+	return key[:1] + "***" + key[len(key)-1:]
 }
 
 func secureString(b []byte) string {
