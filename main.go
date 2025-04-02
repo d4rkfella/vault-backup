@@ -916,6 +916,13 @@ func sendPushoverNotification(
 		userKey.Zero()
 	}()
 
+	log.Debug().
+		Str("token_prefix", fmt.Sprintf("%.6s", apiStr)).
+		Str("user_prefix", fmt.Sprintf("%.6s", userStr)).
+		Int("token_len", len(apiStr)).
+		Int("user_len", len(userStr)).
+		Msg("Pushover credential validation")
+
 	if !isValidPushoverToken(apiStr) || !isValidPushoverUser(userStr) {
 		return fmt.Errorf("invalid pushover credentials")
 	}
