@@ -173,6 +173,8 @@ func run(cfg *Config) int {
 			); notifyErr != nil {
 				log.Warn().Err(notifyErr).Msg("Pushover notification failed")
 			}
+			pushoverAPI.Zero()
+			pushoverUser.Zero()
 		}
 
 		if success {
@@ -236,10 +238,6 @@ func run(cfg *Config) int {
 	if len(creds.PushoverAPI) > 0 && len(creds.PushoverUser) > 0 {
 		pushoverAPI = newSecureString(bytes.Clone(creds.PushoverAPI))
 		pushoverUser = newSecureString(bytes.Clone(creds.PushoverUser))
-		defer func() {
-			pushoverAPI.Zero()
-			pushoverUser.Zero()
-		}()
 		sendPushover = true
 	}
 
@@ -566,7 +564,6 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCreden
 	}
 
 	data := secret.Data
-	// Handle KV v2 format
 	if v2Data, ok := data["data"].(map[string]interface{}); ok {
 		data = v2Data
 	}
@@ -581,11 +578,11 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCreden
 		return creds, errors.New("missing AWS credentials in vault secret")
 	}
 
-	if poAPI, ok := data["pushover_api_token"].(string); ok {
-		creds.PushoverAPI = []byte(strings.TrimSpace(poAPI))
+	if pushoverAPI, ok := data["pushover_api_token"].(string); ok {
+		creds.PushoverAPI = []byte(strings.TrimSpace(pushoverAPI))
 	}
-	if poUser, ok := data["pushover_user_id"].(string); ok {
-		creds.PushoverUser = []byte(strings.TrimSpace(poUser))
+	if pushoverUser, ok := data["pushover_user_id"].(string); ok {
+		creds.PushoverUser = []byte(strings.TrimSpace(pushoverUser))
 	}
 
 	hasAPI := len(creds.PushoverAPI) > 0
