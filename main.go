@@ -306,14 +306,14 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 	}
 	defer file.Close()
 
-	var s3Hash hash.Hash
+	var h hash.Hash
 	if cfg.S3ChecksumAlgorithm == "CRC32" {
-		s3Hash = crc32.NewIEEE()
+		h = crc32.NewIEEE()
 	} else {
-		s3Hash = sha256.New()
+		h = sha256.New()
 	}
 
-	writer := io.MultiWriter(file, s3Hash)
+	writer := io.MultiWriter(file, h)
 
 	if err := client.Sys().RaftSnapshotWithContext(ctx, writer); err != nil {
 		os.Remove(snapshotPath)
@@ -326,8 +326,8 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 		return "", "", fmt.Errorf("internal checksum verification failed: %w", err)
 	}
 
-	s3Checksum := fmt.Sprintf("%x", s3Hash.Sum(nil))
-	return snapshotPath, s3Checksum, nil
+	checksum := fmt.Sprintf("%x", h.Sum(nil))
+	return snapshotPath, checksum, nil
 }
 
 func verifyInternalChecksums(snapshotPath string) (bool, error) {
