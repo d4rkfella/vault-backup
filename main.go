@@ -512,7 +512,13 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		ServerSideEncryption: aws.String("AES256"),
 	}
 
-	if cfg.S3ChecksumAlgorithm == "CRC32" {
+	checksumBytes, err := hex.DecodeString(checksum)
+	if err != nil {
+		return fmt.Errorf("failed to decode checksum: %w", err)
+	}
+
+	switch cfg.S3ChecksumAlgorithm {
+	case "CRC32":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
 		checksumBytes, err := hex.DecodeString(checksum)
 		if err != nil {
@@ -520,7 +526,8 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		}
 		putObjectInput.ChecksumCRC32 = aws.String(base64.StdEncoding.EncodeToString(checksumBytes))
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using CRC32 checksum algorithm")
-	} else {
+
+	case "SHA256":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmSha256)
 		checksumBytes, err := hex.DecodeString(checksum)
 		if err != nil {
@@ -528,6 +535,9 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		}
 		putObjectInput.ChecksumSHA256 = aws.String(string(checksumBytes))
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using SHA256 checksum algorithm")
+
+	default:
+		return fmt.Errorf("unsupported checksum algorithm: %s", cfg.S3ChecksumAlgorithm)
 	}
 
 	if cfg.DebugMode {
