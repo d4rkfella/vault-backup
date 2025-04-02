@@ -150,9 +150,17 @@ func main() {
 		}
 
 		if len(pushoverAPIKey) > 0 && len(pushoverUserKey) > 0 {
-			if err := sendPushoverNotification(pushoverAPIKey, pushoverUserKey, report); err != nil {
+			apiCopy := make([]byte, len(pushoverAPIKey))
+			userCopy := make([]byte, len(pushoverUserKey))
+			copy(apiCopy, pushoverAPIKey)
+			copy(userCopy, pushoverUserKey)
+
+			if err := sendPushoverNotification(apiCopy, userCopy, report); err != nil {
 				log.Warn().Err(err).Msg("Failed to send Pushover notification")
 			}
+
+			zeroBytes(apiCopy)
+			zeroBytes(userCopy)
 		} else {
 			log.Debug().Msg("Skipping Pushover notification - credentials not found in Vault")
 		}
@@ -889,21 +897,25 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 
 func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error {
 	if len(apiKey) == 0 || len(userKey) == 0 {
-		return errors.New("Pushover credentials not configured")
+		return errors.New("empty Pushover credentials")
 	}
-	defer func() {
-		zeroBytes(apiKey)
-		zeroBytes(userKey)
-	}()
 
-	log.Info().Msg("Sending Pushover notification")
-
-	apiKeyStr := string(apiKey)
-	userKeyStr := string(userKey)
+	apiKeyStr := strings.TrimSpace(string(apiKey))
+	userKeyStr := strings.TrimSpace(string(userKey))
 	defer func() {
 		zeroBytes([]byte(apiKeyStr))
 		zeroBytes([]byte(userKeyStr))
 	}()
+
+	if !isValidPushoverToken(apiKeyStr) || !isValidPushoverUser(userKeyStr) {
+		log.Debug().
+			Str("api_key_prefix", redactKey(apiKeyStr)).
+			Str("user_key_prefix", redactKey(userKeyStr)).
+			Msg("Invalid credential format")
+		return errors.New("invalid Pushover credential format")
+	}
+
+	log.Info().Msg("Sending Pushover notification")
 
 	message := &bytes.Buffer{}
 	fmt.Fprintf(message, "• Status: %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
@@ -928,7 +940,10 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 		true:  "0",
 		false: "1",
 	}[report.Success])
-	writer.Close()
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to close writer: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -947,9 +962,26 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("pushover API error: %s (%d)", string(body), resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pushover API error: %s (%d)",
+			strings.TrimSpace(string(respBody)),
+			resp.StatusCode)
 	}
 
 	return nil
+}
+
+func isValidPushoverToken(token string) bool {
+	return len(token) == 30 && strings.HasPrefix(token, "u")
+}
+
+func isValidPushoverUser(userKey string) bool {
+	return len(userKey) == 30 && strings.HasPrefix(userKey, "u")
+}
+
+func redactKey(key string) string {
+	if len(key) < 4 {
+		return "***"
+	}
+	return key[:2] + "***" + key[len(key)-2:]
 }
