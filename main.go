@@ -514,17 +514,24 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 
 	checksumBytes, err := hex.DecodeString(checksum)
 	if err != nil {
-		return fmt.Errorf("failed to decode checksum: %w", err)
+		return fmt.Errorf("invalid checksum format: %w", err)
 	}
 
 	base64Checksum := base64.StdEncoding.EncodeToString(checksumBytes)
-
 	switch cfg.S3ChecksumAlgorithm {
 	case "CRC32":
+		if len(checksumBytes) != crc32.Size {
+			return fmt.Errorf("invalid CRC32 checksum length: expected %d bytes, got %d",
+				crc32.Size, len(checksumBytes))
+		}
 		putObjectInput.ChecksumCRC32 = aws.String(base64Checksum)
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using CRC32 checksum")
 
 	case "SHA256":
+		if len(checksumBytes) != sha256.Size {
+			return fmt.Errorf("invalid SHA256 checksum length: expected %d bytes, got %d",
+				sha256.Size, len(checksumBytes))
+		}
 		putObjectInput.ChecksumSHA256 = aws.String(base64Checksum)
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using SHA256 checksum")
 
@@ -532,41 +539,61 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		return fmt.Errorf("unsupported checksum algorithm: %s", cfg.S3ChecksumAlgorithm)
 	}
 
+	svc := s3.New(sess, &aws.Config{
+		Logger:   aws.NewDefaultLogger(),
+		LogLevel: aws.LogLevel(aws.LogOff),
+	})
+
 	if cfg.DebugMode {
 		progressTicker := time.NewTicker(15 * time.Second)
 		defer progressTicker.Stop()
+
 		done := make(chan error)
+		fileInfo, _ := file.Stat()
+		totalSize := fileInfo.Size()
 
 		go func() {
-			_, err = s3.New(sess).PutObjectWithContext(ctx, putObjectInput)
+			_, err = svc.PutObjectWithContext(ctx, putObjectInput)
 			done <- err
 		}()
 
 		for {
 			select {
 			case <-progressTicker.C:
-				if stats, err := file.Stat(); err == nil {
-					log.Debug().
-						Int64("bytes_uploaded", stats.Size()).
-						Str("bucket", cfg.S3Bucket).
-						Msg("Upload progress")
-				}
+				currentPos, _ := file.Seek(0, io.SeekCurrent)
+				log.Debug().
+					Int64("bytes_uploaded", currentPos).
+					Int64("total_bytes", totalSize).
+					Str("progress", fmt.Sprintf("%.1f%%", float64(currentPos)/float64(totalSize)*100)).
+					Msg("Upload status")
+
 			case err := <-done:
 				if err != nil {
-					return fmt.Errorf("s3 put operation: %w", err)
+					return fmt.Errorf("s3 upload failed: %w", err)
 				}
-				log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
+				log.Info().
+					Str("bucket", cfg.S3Bucket).
+					Str("key", filepath.Base(path)).
+					Int64("size_bytes", totalSize).
+					Msg("Upload completed")
 				return nil
+
 			case <-ctx.Done():
-				return fmt.Errorf("upload timeout: %w", ctx.Err())
+				return fmt.Errorf("upload canceled: %w", ctx.Err())
 			}
 		}
 	}
-	_, err = s3.New(sess).PutObjectWithContext(ctx, putObjectInput)
+
+	_, err = svc.PutObjectWithContext(ctx, putObjectInput)
 	if err != nil {
-		return fmt.Errorf("s3 put operation: %w", err)
+		return fmt.Errorf("s3 upload failed: %w", err)
 	}
-	log.Info().Str("bucket", cfg.S3Bucket).Str("key", filepath.Base(path)).Msg("Snapshot uploaded")
+
+	log.Info().
+		Str("bucket", cfg.S3Bucket).
+		Str("key", filepath.Base(path)).
+		Msg("Upload completed")
+
 	return nil
 }
 
