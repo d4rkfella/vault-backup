@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -294,7 +296,7 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 
 func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, string, error) {
 	snapshotPath := filepath.Join(cfg.SnapshotPath, fmt.Sprintf("vaultsnapshot-%s.snap", time.Now().Format("20060102-150405")))
-	
+
 	file, err := os.OpenFile(snapshotPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return "", "", fmt.Errorf("file creation: %w", err)
@@ -307,14 +309,14 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 	} else {
 		h = sha256.New()
 	}
-	
+
 	writer := io.MultiWriter(file, h)
-	
+
 	if err := client.Sys().RaftSnapshotWithContext(ctx, writer); err != nil {
 		os.Remove(snapshotPath)
 		return "", "", fmt.Errorf("raft snapshot: %w", err)
 	}
-	
+
 	checksum := fmt.Sprintf("%x", h.Sum(nil))
 	return snapshotPath, checksum, nil
 }
