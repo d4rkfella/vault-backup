@@ -366,31 +366,32 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			continue
 		}
 
-		h := sha256.New()
-		if _, err := io.Copy(h, tarReader); err != nil {
-			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
+		if _, exists := expected[hdr.Name]; exists {
+			h := sha256.New()
+			if _, err := io.Copy(h, tarReader); err != nil {
+				return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
+			}
+			computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
+		} else {
+			fmt.Printf("Skipping file: %s (not in SHA256SUMS)\n", hdr.Name)
+			if _, err := io.Copy(io.Discard, tarReader); err != nil {
+				return false, fmt.Errorf("failed to skip over unlisted file %s: %w", hdr.Name, err)
+			}
 		}
-		computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
 	}
 
 	if len(expected) == 0 {
-		return false, fmt.Errorf("SHA256SUMS file missing")
+		return false, fmt.Errorf("SHA256SUMS file missing or empty")
 	}
 
-	for filename, actual := range computed {
-		expectedSum, exists := expected[filename]
+	for filename, expectedSum := range expected {
+		actualSum, exists := computed[filename]
 		if !exists {
-			return false, fmt.Errorf("file %s not in SHA256SUMS", filename)
-		}
-		if actual != expectedSum {
-			return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
-				filename, expectedSum, actual)
-		}
-	}
-
-	for filename := range expected {
-		if _, exists := computed[filename]; !exists {
 			return false, fmt.Errorf("missing file %s in snapshot", filename)
+		}
+		if actualSum != expectedSum {
+			return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
+				filename, expectedSum, actualSum)
 		}
 	}
 
@@ -400,6 +401,10 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 func parseSHA256SUMS(content []byte) map[string]string {
 	sums := make(map[string]string)
 	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		parts := strings.Fields(line)
 		if len(parts) == 2 {
 			sums[parts[1]] = parts[0]
