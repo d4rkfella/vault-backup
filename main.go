@@ -566,25 +566,32 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCreden
 	}
 
 	data := secret.Data
+	// Handle KV v2 format
 	if v2Data, ok := data["data"].(map[string]interface{}); ok {
 		data = v2Data
 	}
 
 	if awsAccess, ok := data["aws_access_key"].(string); ok {
-		creds.AWSAccess = []byte(awsAccess)
+		creds.AWSAccess = []byte(strings.TrimSpace(awsAccess))
 	}
 	if awsSecret, ok := data["aws_secret_key"].(string); ok {
-		creds.AWSSecret = []byte(awsSecret)
+		creds.AWSSecret = []byte(strings.TrimSpace(awsSecret))
 	}
 	if len(creds.AWSAccess) == 0 || len(creds.AWSSecret) == 0 {
 		return creds, errors.New("missing AWS credentials in vault secret")
 	}
 
 	if poAPI, ok := data["pushover_api_token"].(string); ok {
-		creds.PushoverAPI = []byte(poAPI)
+		creds.PushoverAPI = []byte(strings.TrimSpace(poAPI))
 	}
 	if poUser, ok := data["pushover_user_id"].(string); ok {
-		creds.PushoverUser = []byte(poUser)
+		creds.PushoverUser = []byte(strings.TrimSpace(poUser))
+	}
+
+	hasAPI := len(creds.PushoverAPI) > 0
+	hasUser := len(creds.PushoverUser) > 0
+	if hasAPI != hasUser {
+		return creds, fmt.Errorf("partial Pushover credentials - both API token and user key required")
 	}
 
 	return creds, nil
@@ -969,11 +976,13 @@ func sendPushoverNotification(
 }
 
 func isValidPushoverToken(token string) bool {
-	return len(token) == 30 && strings.HasPrefix(token, "a")
+	clean := strings.TrimSpace(token)
+	return len(clean) == 30 && strings.HasPrefix(clean, "a")
 }
 
 func isValidPushoverUser(userKey string) bool {
-	return len(userKey) == 30 && strings.HasPrefix(userKey, "u")
+	clean := strings.TrimSpace(userKey)
+	return len(clean) == 30 && strings.HasPrefix(clean, "u")
 }
 
 func redactKey(key string) string {
