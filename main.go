@@ -357,46 +357,52 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			return false, fmt.Errorf("tar error: %w", err)
 		}
 
-		fmt.Printf("Found file in tar: %s\n", hdr.Name)
-
 		if hdr.Name == "SHA256SUMS" {
 			content, err := io.ReadAll(tarReader)
 			if err != nil {
 				return false, fmt.Errorf("failed to read SHA256SUMS: %w", err)
 			}
 			expected = parseSHA256SUMS(content)
-			continue
-		}
-
-		normalizedName := strings.TrimPrefix(hdr.Name, "/")
-
-		if _, exists := expected[normalizedName]; exists {
-			fmt.Printf("Processing file: %s (listed in SHA256SUMS)\n", normalizedName)
-			h := sha256.New()
-			if _, err := io.Copy(h, tarReader); err != nil {
-				return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
-			}
-			computed[normalizedName] = fmt.Sprintf("%x", h.Sum(nil))
-		} else {
-			fmt.Printf("Skipping file: %s (not in SHA256SUMS)\n", normalizedName)
-			if _, err := io.Copy(io.Discard, tarReader); err != nil {
-				return false, fmt.Errorf("failed to skip over unlisted file %s: %w", normalizedName, err)
-			}
+			break
 		}
 	}
 
 	if len(expected) == 0 {
-		return false, fmt.Errorf("SHA256SUMS file missing or empty")
+		return false, fmt.Errorf("SHA256SUMS file missing")
+	}
+
+	file.Seek(0, 0)
+	gzReader, _ = gzip.NewReader(file)
+	tarReader = tar.NewReader(gzReader)
+
+	for {
+		hdr, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("tar error: %w", err)
+		}
+
+		if _, exists := expected[hdr.Name]; !exists {
+			continue
+		}
+
+		h := sha256.New()
+		if _, err := io.Copy(h, tarReader); err != nil {
+			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
+		}
+		computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
 	}
 
 	for filename, expectedSum := range expected {
-		actualSum, exists := computed[filename]
+		actual, exists := computed[filename]
 		if !exists {
 			return false, fmt.Errorf("missing file %s in snapshot", filename)
 		}
-		if actualSum != expectedSum {
+		if actual != expectedSum {
 			return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
-				filename, expectedSum, actualSum)
+				filename, expectedSum, actual)
 		}
 	}
 
@@ -408,7 +414,7 @@ func parseSHA256SUMS(content []byte) map[string]string {
 	for _, line := range strings.Split(string(content), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
-			continue // Skip empty lines
+			continue
 		}
 		parts := strings.Fields(line)
 		if len(parts) == 2 {
