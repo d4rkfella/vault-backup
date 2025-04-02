@@ -150,17 +150,14 @@ func main() {
 		}
 
 		if len(pushoverAPIKey) > 0 && len(pushoverUserKey) > 0 {
-			apiCopy := make([]byte, len(pushoverAPIKey))
-			userCopy := make([]byte, len(pushoverUserKey))
-			copy(apiCopy, pushoverAPIKey)
-			copy(userCopy, pushoverUserKey)
+			apiClone := bytes.Clone(pushoverAPIKey)
+			userClone := bytes.Clone(pushoverUserKey)
+			defer zeroBytes(apiClone)
+			defer zeroBytes(userClone)
 
-			if err := sendPushoverNotification(apiCopy, userCopy, report); err != nil {
+			if err := sendPushoverNotification(apiClone, userClone, report); err != nil {
 				log.Warn().Err(err).Msg("Failed to send Pushover notification")
 			}
-
-			zeroBytes(apiCopy)
-			zeroBytes(userCopy)
 		} else {
 			log.Debug().Msg("Skipping Pushover notification - credentials not found in Vault")
 		}
@@ -221,13 +218,11 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]b
 		zeroBytes(creds.PushoverUser)
 	}()
 
-	*pushoverAPIKey = make([]byte, len(creds.PushoverAPI))
-	copy(*pushoverAPIKey, creds.PushoverAPI)
-	*pushoverUserKey = make([]byte, len(creds.PushoverUser))
-	copy(*pushoverUserKey, creds.PushoverUser)
+	*pushoverAPIKey = bytes.Clone(creds.PushoverAPI)
+	*pushoverUserKey = bytes.Clone(creds.PushoverUser)
 
-	awsAccess := string(creds.AWSAccess)
-	awsSecret := string(creds.AWSSecret)
+	awsAccess := string(bytes.Clone(creds.AWSAccess))
+	awsSecret := string(bytes.Clone(creds.AWSSecret))
 	defer func() {
 		zeroBytes([]byte(awsAccess))
 		zeroBytes([]byte(awsSecret))
@@ -896,12 +891,18 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 }
 
 func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error {
-	if len(apiKey) == 0 || len(userKey) == 0 {
-		return errors.New("empty Pushover credentials")
+	if len(apiKey) != 30 || len(userKey) != 30 {
+		return fmt.Errorf("invalid credential length (api:%d user:%d)",
+			len(apiKey), len(userKey))
 	}
 
-	apiKeyStr := string(bytes.Trim(apiKey, "\x00 \n"))
-	userKeyStr := string(bytes.Trim(userKey, "\x00 \n"))
+	apiClone := bytes.Clone(apiKey)
+	userClone := bytes.Clone(userKey)
+	defer zeroBytes(apiClone)
+	defer zeroBytes(userClone)
+
+	apiKeyStr := string(apiClone)
+	userKeyStr := string(userClone)
 	defer func() {
 		zeroBytes([]byte(apiKeyStr))
 		zeroBytes([]byte(userKeyStr))
@@ -980,7 +981,7 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 }
 
 func isValidPushoverToken(token string) bool {
-	return len(token) == 30 && strings.HasPrefix(token, "u")
+	return len(token) == 30 && strings.HasPrefix(token, "a")
 }
 
 func isValidPushoverUser(userKey string) bool {
@@ -992,4 +993,14 @@ func redactKey(key string) string {
 		return "***"
 	}
 	return key[:2] + "***" + key[len(key)-2:]
+}
+
+func secureString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	sb := strings.Builder{}
+	sb.Write(b)
+	zeroBytes(b)
+	return sb.String()
 }
