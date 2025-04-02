@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -337,9 +338,18 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 	}
 	defer file.Close()
 
-	tarReader := tar.NewReader(file)
+	// Handle gzip decompression
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return false, fmt.Errorf("invalid gzip format: %w", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
 	expected := make(map[string]string)
+	computed := make(map[string]string)
 
+	// Single pass through the tar archive
 	for {
 		hdr, err := tarReader.Next()
 		if err == io.EOF {
@@ -349,51 +359,59 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			return false, fmt.Errorf("tar error: %w", err)
 		}
 
+		// Capture SHA256SUMS content
 		if hdr.Name == "SHA256SUMS" {
-			content, _ := io.ReadAll(tarReader)
-			for _, line := range strings.Split(string(content), "\n") {
-				parts := strings.Fields(line)
-				if len(parts) == 2 {
-					expected[parts[1]] = parts[0]
-				}
+			content, err := io.ReadAll(tarReader)
+			if err != nil {
+				return false, fmt.Errorf("failed to read SHA256SUMS: %w", err)
 			}
-			break
-		}
-	}
-
-	if len(expected) == 0 {
-		return false, fmt.Errorf("missing SHA256SUMS file")
-	}
-
-	file.Seek(0, 0)
-	tarReader = tar.NewReader(file)
-
-	for {
-		hdr, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, fmt.Errorf("tar error: %w", err)
-		}
-
-		if hdr.Name == "SHA256SUMS" {
+			expected = parseSHA256SUMS(content)
 			continue
 		}
 
+		// Compute checksum for other files
 		h := sha256.New()
 		if _, err := io.Copy(h, tarReader); err != nil {
 			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
 		}
+		computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
+	}
 
-		actual := fmt.Sprintf("%x", h.Sum(nil))
-		expectedSum, exists := expected[hdr.Name]
-		if !exists || actual != expectedSum {
-			return false, fmt.Errorf("checksum mismatch for %s", hdr.Name)
+	// Verify all checksums
+	if len(expected) == 0 {
+		return false, fmt.Errorf("SHA256SUMS file missing")
+	}
+
+	for filename, actual := range computed {
+		expectedSum, exists := expected[filename]
+		if !exists {
+			return false, fmt.Errorf("file %s not in SHA256SUMS", filename)
+		}
+		if actual != expectedSum {
+			return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
+				filename, expectedSum, actual)
+		}
+	}
+
+	// Ensure all expected files are present
+	for filename := range expected {
+		if _, exists := computed[filename]; !exists {
+			return false, fmt.Errorf("missing file %s in snapshot", filename)
 		}
 	}
 
 	return true, nil
+}
+
+func parseSHA256SUMS(content []byte) map[string]string {
+	sums := make(map[string]string)
+	for _, line := range strings.Split(string(content), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			sums[parts[1]] = parts[0]
+		}
+	}
+	return sums
 }
 
 func getCredentialsFromVault(client *api.Client, secretPath string) (string, string, string, string, error) {
