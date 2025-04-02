@@ -12,12 +12,15 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
@@ -73,10 +76,10 @@ type Config struct {
 }
 
 type VaultCredentials struct {
-	AWSAccessKey    string
-	AWSSecretKey    string
-	PushoverAPIKey  string
-	PushoverUserKey string
+	AWSAccess    []byte
+	AWSSecret    []byte
+	PushoverAPI  []byte
+	PushoverUser []byte
 }
 
 type BackupReport struct {
@@ -86,6 +89,11 @@ type BackupReport struct {
 	Error        string        `json:"error,omitempty"`
 }
 
+type readCounter struct {
+	total int64
+	r     io.Reader
+}
+
 func (r BackupReport) MarshalZerologObject(e *zerolog.Event) {
 	e.Bool("success", r.Success)
 	e.Dur("duration_ms", r.Duration)
@@ -93,6 +101,12 @@ func (r BackupReport) MarshalZerologObject(e *zerolog.Event) {
 	if r.Error != "" {
 		e.Str("error", r.Error)
 	}
+}
+
+func (rc *readCounter) Read(p []byte) (n int, err error) {
+	n, err = rc.r.Read(p)
+	rc.total += int64(n)
+	return
 }
 
 func main() {
@@ -112,9 +126,14 @@ func main() {
 	report := BackupReport{}
 	startTime := time.Now()
 	exitCode := 0
-	var pushoverAPIKey, pushoverUserKey string
+	var pushoverAPIKey, pushoverUserKey []byte
 
 	defer func() {
+		if len(pushoverAPIKey) > 0 || len(pushoverUserKey) > 0 {
+			zeroBytes(pushoverAPIKey)
+			zeroBytes(pushoverUserKey)
+		}
+
 		if r := recover(); r != nil {
 			report.Error = fmt.Sprintf("panic: %v", r)
 			log.Error().
@@ -130,7 +149,7 @@ func main() {
 			log.Error().EmbedObject(report).Msg("Backup failed")
 		}
 
-		if pushoverAPIKey != "" && pushoverUserKey != "" {
+		if len(pushoverAPIKey) > 0 && len(pushoverUserKey) > 0 {
 			if err := sendPushoverNotification(pushoverAPIKey, pushoverUserKey, report); err != nil {
 				log.Warn().Err(err).Msg("Failed to send Pushover notification")
 			}
@@ -159,11 +178,21 @@ func main() {
 	report.Success = true
 }
 
-func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *string) error {
+func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]byte) error {
 	setupSystemResources(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Warn().Msg("Starting graceful shutdown")
+		cancel()
+		time.Sleep(30 * time.Second)
+		os.Exit(1)
+	}()
 
 	log.Debug().Str("component", "vault").Msg("Initializing client")
 	vaultClient, err := setupVaultClient(cfg)
@@ -173,12 +202,28 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 	log.Debug().Str("component", "vault").Msg("Client initialized")
 
 	log.Debug().Str("component", "credentials").Msg("Fetching from Vault")
-	awsAccessKey, awsSecretKey, poAPIKey, poUserKey, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
+	creds, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
 	if err != nil {
 		return fmt.Errorf("vault credentials: %w", err)
 	}
-	*pushoverAPIKey = poAPIKey
-	*pushoverUserKey = poUserKey
+	defer func() {
+		zeroBytes(creds.AWSAccess)
+		zeroBytes(creds.AWSSecret)
+		zeroBytes(creds.PushoverAPI)
+		zeroBytes(creds.PushoverUser)
+	}()
+
+	*pushoverAPIKey = make([]byte, len(creds.PushoverAPI))
+	copy(*pushoverAPIKey, creds.PushoverAPI)
+	*pushoverUserKey = make([]byte, len(creds.PushoverUser))
+	copy(*pushoverUserKey, creds.PushoverUser)
+
+	awsAccess := string(creds.AWSAccess)
+	awsSecret := string(creds.AWSSecret)
+	defer func() {
+		zeroBytes([]byte(awsAccess))
+		zeroBytes([]byte(awsSecret))
+	}()
 
 	log.Info().Str("component", "snapshot").Msg("Creation started")
 	snapshotPath, err := createSnapshot(ctx, vaultClient, cfg)
@@ -190,15 +235,18 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 
 	if fileInfo, err := os.Stat(snapshotPath); err == nil {
 		report.SnapshotSize = fileInfo.Size()
-		log.Debug().Str("component", "snapshot").Int64("size_bytes", fileInfo.Size()).Msg("File size")
+		log.Debug().
+			Str("component", "snapshot").
+			Int64("size_bytes", fileInfo.Size()).
+			Msg("File size verified")
 	}
 
-	log.Debug().Str("component", "aws").Msg("Creating session")
-	awsSession, err := newAWSSession(cfg, awsAccessKey, awsSecretKey)
+	log.Debug().Str("component", "aws").Msg("Creating AWS session")
+	awsSession, err := newAWSSession(cfg, awsAccess, awsSecret)
 	if err != nil {
 		return fmt.Errorf("aws session: %w", err)
 	}
-	log.Debug().Str("component", "aws").Msg("Session established")
+	log.Debug().Str("component", "aws").Msg("AWS session established")
 
 	log.Info().Str("component", "upload").Msg("Starting S3 upload")
 	uploadStart := time.Now()
@@ -208,16 +256,27 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 	log.Info().
 		Str("component", "upload").
 		Dur("duration", time.Since(uploadStart)).
-		Msg("Upload completed")
+		Msg("Upload completed successfully")
 
 	log.Debug().Str("component", "cleanup").Msg("Starting snapshot cleanup")
-	snapshotsDeleted, err := cleanupOldSnapshots(ctx, awsSession, cfg)
+	deletedCount, err := cleanupOldSnapshots(ctx, awsSession, cfg)
 	if err != nil {
-		log.Warn().Str("component", "cleanup").Err(err).Msg("Cleanup failed")
-	} else if snapshotsDeleted {
-		log.Info().Str("component", "cleanup").Msg("Old snapshots removed")
+		log.Warn().
+			Str("component", "cleanup").
+			Err(err).
+			Msg("Cleanup completed with errors")
 	} else {
-		log.Info().Str("component", "cleanup").Msg("No old snapshots found")
+		switch {
+		case deletedCount > 0:
+			log.Info().
+				Str("component", "cleanup").
+				Int("deleted_count", deletedCount).
+				Msg("Successfully removed old snapshots")
+		default:
+			log.Info().
+				Str("component", "cleanup").
+				Msg("No snapshots eligible for deletion")
+		}
 	}
 
 	return nil
@@ -230,13 +289,60 @@ func LoadConfig() (*Config, error) {
 		AWSEndpoint:         getEnv("AWS_ENDPOINT_URL", ""),
 		AWSRegion:           getEnv("AWS_REGION", "auto"),
 		RetentionDays:       getEnvInt("VAULT_BACKUP_RETENTION", 7),
-		VaultKubernetesRole: getEnv("VAULT_K8S_ROLE", ""),
+		VaultKubernetesRole: requireEnv("VAULT_K8S_ROLE"),
 		VaultSecretPath:     requireEnv("VAULT_SECRET_PATH"),
 		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
 		DebugMode:           getEnvBool("DEBUG_MODE", false),
 		SecureDelete:        getEnvBool("SECURE_DELETE", false),
+	}
+
+	validAlgorithms := map[string]bool{
+		"CRC32":  true,
+		"CRC32C": true,
+		"SHA1":   true,
+		"SHA256": true,
+		"":       true,
+	}
+
+	if !validAlgorithms[cfg.S3ChecksumAlgorithm] {
+		return nil, fmt.Errorf("invalid checksum algorithm: %s. Supported: CRC32, CRC32C, SHA1, SHA256", cfg.S3ChecksumAlgorithm)
+	}
+
+	if _, err := url.ParseRequestURI(cfg.VaultAddr); err != nil {
+		return nil, fmt.Errorf("invalid VAULT_ADDR: %w", err)
+	}
+
+	if cfg.AWSEndpoint != "" {
+		if _, err := url.ParseRequestURI(cfg.AWSEndpoint); err != nil {
+			return nil, fmt.Errorf("invalid AWS_ENDPOINT_URL: %w", err)
+		}
+	}
+
+	if cfg.MemoryLimitRatio <= 0 || cfg.MemoryLimitRatio > 1 {
+		return nil, errors.New("MEMORY_LIMIT_RATIO must be > 0 and ≤ 1")
+	}
+
+	if cfg.S3ChecksumAlgorithm != "" {
+		allowedAlgos := map[string]bool{"CRC32": true, "SHA256": true}
+		if !allowedAlgos[cfg.S3ChecksumAlgorithm] {
+			return nil, fmt.Errorf("invalid S3_CHECKSUM_ALGORITHM: must be CRC32 or SHA256")
+		}
+	}
+
+	if info, err := os.Stat(cfg.SnapshotPath); err != nil {
+		return nil, fmt.Errorf("invalid SNAPSHOT_PATH: %w", err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("SNAPSHOT_PATH must be a directory")
+	} else {
+		testFile := filepath.Join(cfg.SnapshotPath, ".writetest")
+		if f, err := os.Create(testFile); err != nil {
+			return nil, fmt.Errorf("SNAPSHOT_PATH is not writable: %w", err)
+		} else {
+			f.Close()
+			os.Remove(testFile)
+		}
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -442,13 +548,20 @@ func parseSHA256SUMS(content []byte) map[string]string {
 	return sums
 }
 
-func getCredentialsFromVault(client *api.Client, secretPath string) (string, string, string, string, error) {
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCredentials, error) {
+	creds := VaultCredentials{}
 	secret, err := client.Logical().Read(secretPath)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("vault read failed: %w", err)
+		return creds, fmt.Errorf("vault read failed: %w", err)
 	}
 	if secret == nil || secret.Data == nil {
-		return "", "", "", "", errors.New("no data found in vault secret")
+		return creds, errors.New("no data found in vault secret")
 	}
 
 	data := secret.Data
@@ -456,16 +569,24 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (string, str
 		data = v2Data
 	}
 
-	awsAccessKey, ok1 := data["aws_access_key"].(string)
-	awsSecretKey, ok2 := data["aws_secret_key"].(string)
-	if !ok1 || !ok2 {
-		return "", "", "", "", errors.New("missing AWS credentials in vault secret")
+	if awsAccess, ok := data["aws_access_key"].(string); ok {
+		creds.AWSAccess = []byte(awsAccess)
+	}
+	if awsSecret, ok := data["aws_secret_key"].(string); ok {
+		creds.AWSSecret = []byte(awsSecret)
+	}
+	if len(creds.AWSAccess) == 0 || len(creds.AWSSecret) == 0 {
+		return creds, errors.New("missing AWS credentials in vault secret")
 	}
 
-	poAPIKey, _ := data["pushover_api_token"].(string)
-	poUserKey, _ := data["pushover_user_id"].(string)
+	if poAPI, ok := data["pushover_api_token"].(string); ok {
+		creds.PushoverAPI = []byte(poAPI)
+	}
+	if poUser, ok := data["pushover_user_id"].(string); ok {
+		creds.PushoverUser = []byte(poUser)
+	}
 
-	return awsAccessKey, awsSecretKey, poAPIKey, poUserKey, nil
+	return creds, nil
 }
 
 func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, error) {
@@ -537,11 +658,17 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 	case "CRC32":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
 		log.Debug().Str("component", "upload").Msg("Using AWS CRC32 checksum")
+	case "CRC32C":
+		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32c)
+		log.Debug().Str("component", "upload").Msg("Using AWS CRC32C checksum")
+	case "SHA1":
+		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmSha1)
+		log.Debug().Str("component", "upload").Msg("Using AWS SHA1 checksum")
 	case "SHA256":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmSha256)
 		log.Debug().Str("component", "upload").Msg("Using AWS SHA256 checksum")
-	default:
-		return fmt.Errorf("unsupported checksum algorithm: %s", cfg.S3ChecksumAlgorithm)
+	case "":
+		log.Debug().Str("component", "upload").Msg("No checksum algorithm specified, using default behavior")
 	}
 
 	svc := s3.New(sess, &aws.Config{
@@ -610,7 +737,7 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 	return nil
 }
 
-func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) (bool, error) {
+func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) (int, error) {
 	log.Debug().
 		Str("component", "cleanup").
 		Int("retention_days", cfg.RetentionDays).
@@ -618,43 +745,65 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 
 	cutoff := time.Now().AddDate(0, 0, -cfg.RetentionDays)
 	s3Client := s3.New(sess)
-	var snapshotsDeleted bool
+	var deletedCount int
+	var hasError bool
 
 	err := s3Client.ListObjectsV2PagesWithContext(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(cfg.S3Bucket),
 	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
 		log.Debug().
 			Str("component", "cleanup").
-			Int("objects_scanned", len(page.Contents)).
-			Msg("Processing page")
+			Int("objects_in_page", len(page.Contents)).
+			Msg("Processing bucket page")
 
 		for _, obj := range page.Contents {
-			if obj.LastModified.Before(cutoff) && strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
-				log.Debug().
+			if obj.LastModified == nil || obj.Key == nil {
+				log.Warn().
 					Str("component", "cleanup").
-					Str("object", sanitizePath(*obj.Key)).
-					Time("modified", *obj.LastModified).
-					Msg("Candidate found")
+					Msg("Skipping invalid object metadata")
+				continue
+			}
 
-				if _, err := s3Client.DeleteObjectWithContext(ctx, &s3.DeleteObjectInput{
+			if obj.LastModified.Before(cutoff) && strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
+				_, delErr := s3Client.DeleteObjectWithContext(ctx, &s3.DeleteObjectInput{
 					Bucket: aws.String(cfg.S3Bucket),
 					Key:    obj.Key,
-				}); err != nil {
-					log.Warn().Str("component", "cleanup").Err(err).Str("key", *obj.Key).Msg("Delete failed")
+				})
+
+				if delErr != nil {
+					log.Warn().
+						Str("component", "cleanup").
+						Err(delErr).
+						Str("key", *obj.Key).
+						Msg("Delete failed")
+					hasError = true
 					continue
 				}
-				snapshotsDeleted = true
-				log.Info().Str("component", "cleanup").Str("key", sanitizePath(*obj.Key)).Msg("Deleted")
+
+				deletedCount++
+				log.Debug().
+					Str("component", "cleanup").
+					Str("key", sanitizePath(*obj.Key)).
+					Time("modified", *obj.LastModified).
+					Msg("Deleted snapshot")
 			}
 		}
 		return !lastPage
 	})
 
 	if err != nil {
-		return false, err
+		log.Error().
+			Str("component", "cleanup").
+			Err(err).
+			Msg("Bucket listing failed")
+		return deletedCount, fmt.Errorf("bucket listing failed: %w", err)
 	}
 
-	return snapshotsDeleted, nil
+	if hasError {
+		return deletedCount, errors.New("partial deletions failed")
+	}
+
+	return deletedCount, nil
 }
 
 func secureDelete(path string, cfg *Config) {
@@ -738,11 +887,23 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-func sendPushoverNotification(apiKey, userKey string, report BackupReport) error {
-	if apiKey == "" || userKey == "" {
+func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error {
+	if len(apiKey) == 0 || len(userKey) == 0 {
 		return errors.New("Pushover credentials not configured")
 	}
+	defer func() {
+		zeroBytes(apiKey)
+		zeroBytes(userKey)
+	}()
+
 	log.Info().Msg("Sending Pushover notification")
+
+	apiKeyStr := string(apiKey)
+	userKeyStr := string(userKey)
+	defer func() {
+		zeroBytes([]byte(apiKeyStr))
+		zeroBytes([]byte(userKeyStr))
+	}()
 
 	message := &bytes.Buffer{}
 	fmt.Fprintf(message, "• Status: %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
@@ -758,8 +919,8 @@ func sendPushoverNotification(apiKey, userKey string, report BackupReport) error
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	writer.WriteField("token", apiKey)
-	writer.WriteField("user", userKey)
+	writer.WriteField("token", apiKeyStr)
+	writer.WriteField("user", userKeyStr)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
 	writer.WriteField("html", "1")
