@@ -82,31 +82,38 @@ type VaultCredentials struct {
 	PushoverUser []byte
 }
 
-type BackupReport struct {
-	Success      bool          `json:"success"`
-	Duration     time.Duration `json:"duration_ms"`
-	SnapshotSize int64         `json:"size_bytes"`
-	Error        string        `json:"error,omitempty"`
-}
-
 type readCounter struct {
 	total int64
 	r     io.Reader
-}
-
-func (r BackupReport) MarshalZerologObject(e *zerolog.Event) {
-	e.Bool("success", r.Success)
-	e.Dur("duration_ms", r.Duration)
-	e.Int64("size_bytes", r.SnapshotSize)
-	if r.Error != "" {
-		e.Str("error", r.Error)
-	}
 }
 
 func (rc *readCounter) Read(p []byte) (n int, err error) {
 	n, err = rc.r.Read(p)
 	rc.total += int64(n)
 	return
+}
+
+type secureString []byte
+
+func newSecureString(b []byte) secureString {
+	ss := make(secureString, len(b))
+	copy(ss, b)
+	zeroBytes(b)
+	return ss
+}
+
+func (ss secureString) String() string {
+	return string(ss)
+}
+
+func (ss *secureString) Zero() {
+	if ss == nil {
+		return
+	}
+	for i := range *ss {
+		(*ss)[i] = 0
+	}
+	*ss = nil
 }
 
 func main() {
@@ -123,49 +130,73 @@ func main() {
 		})
 	}
 
-	report := BackupReport{}
-	startTime := time.Now()
 	exitCode := 0
-
 	defer func() {
 		if r := recover(); r != nil {
-			report.Error = fmt.Sprintf("panic: %v", r)
 			log.Error().
 				Str("stack", string(debug.Stack())).
-				Msg("Unexpected panic occurred")
+				Msg(fmt.Sprintf("Unexpected panic: %v", r))
 			exitCode = 1
 		}
-
-		report.Duration = time.Since(startTime)
-		if report.Success {
-			log.Info().EmbedObject(report).Msg("Backup completed")
-		} else {
-			log.Error().EmbedObject(report).Msg("Backup failed")
-		}
-
-		if report.Error != "" {
-			var errChain []string
-			for unwrapped := errors.New(report.Error); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
-				errChain = append(errChain, unwrapped.Error())
-			}
-			log.Error().
-				Strs("error_chain", errChain).
-				Msg("Failure breakdown")
-		}
-
 		os.Exit(exitCode)
 	}()
 
-	if err := run(&report, cfg); err != nil {
-		report.Error = err.Error()
-		exitCode = 1
-		return
-	}
-	report.Success = true
+	exitCode = run(cfg)
 }
 
-func run(report *BackupReport, cfg *Config) error {
-	setupSystemResources(cfg)
+func run(cfg *Config) int {
+	startTime := time.Now()
+	var err error
+	var snapshotSize int64
+	var pushoverAPI, pushoverUser secureString
+	var sendPushover bool
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+			log.Error().
+				Str("stack", string(debug.Stack())).
+				Msg("Panic occurred during backup")
+		}
+
+		duration := time.Since(startTime)
+		success := err == nil
+
+		if sendPushover {
+			if notifyErr := sendPushoverNotification(
+				pushoverAPI,
+				pushoverUser,
+				success,
+				duration,
+				snapshotSize,
+				err,
+			); notifyErr != nil {
+				log.Warn().Err(notifyErr).Msg("Pushover notification failed")
+			}
+		}
+
+		if success {
+			log.Info().
+				Dur("duration", duration).
+				Int64("size_bytes", snapshotSize).
+				Msg("Backup completed")
+		} else {
+			log.Error().
+				Err(err).
+				Dur("duration", duration).
+				Msg("Backup failed")
+
+			if err != nil {
+				var errChain []string
+				for unwrapped := err; unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+					errChain = append(errChain, unwrapped.Error())
+				}
+				log.Error().
+					Strs("error_chain", errChain).
+					Msg("Failure breakdown")
+			}
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -180,16 +211,20 @@ func run(report *BackupReport, cfg *Config) error {
 		os.Exit(1)
 	}()
 
+	setupSystemResources(cfg)
+
 	log.Debug().Str("component", "vault").Msg("Initializing client")
-	vaultClient, err := setupVaultClient(cfg)
-	if err != nil {
-		return fmt.Errorf("vault setup: %w", err)
+	vaultClient, vaultErr := setupVaultClient(cfg)
+	if vaultErr != nil {
+		err = fmt.Errorf("vault setup: %w", vaultErr)
+		return 1
 	}
 
 	log.Debug().Str("component", "credentials").Msg("Fetching from Vault")
-	creds, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
-	if err != nil {
-		return fmt.Errorf("vault credentials: %w", err)
+	creds, credsErr := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
+	if credsErr != nil {
+		err = fmt.Errorf("vault credentials: %w", credsErr)
+		return 1
 	}
 	defer func() {
 		zeroBytes(creds.AWSAccess)
@@ -198,52 +233,54 @@ func run(report *BackupReport, cfg *Config) error {
 		zeroBytes(creds.PushoverUser)
 	}()
 
-	awsAccess := secureString(bytes.Clone(creds.AWSAccess))
-	awsSecret := secureString(bytes.Clone(creds.AWSSecret))
+	if len(creds.PushoverAPI) > 0 && len(creds.PushoverUser) > 0 {
+		pushoverAPI = newSecureString(bytes.Clone(creds.PushoverAPI))
+		pushoverUser = newSecureString(bytes.Clone(creds.PushoverUser))
+		defer func() {
+			pushoverAPI.Zero()
+			pushoverUser.Zero()
+		}()
+		sendPushover = true
+	}
+
+	awsAccess := newSecureString(bytes.Clone(creds.AWSAccess))
+	awsSecret := newSecureString(bytes.Clone(creds.AWSSecret))
+	defer func() {
+		awsAccess.Zero()
+		awsSecret.Zero()
+	}()
 
 	log.Info().Str("component", "snapshot").Msg("Creation started")
-	snapshotPath, err := createSnapshot(ctx, vaultClient, cfg)
-	if err != nil {
-		return fmt.Errorf("snapshot creation: %w", err)
+	snapshotPath, snapshotErr := createSnapshot(ctx, vaultClient, cfg)
+	if snapshotErr != nil {
+		err = fmt.Errorf("snapshot creation: %w", snapshotErr)
+		return 1
 	}
 	defer secureDelete(snapshotPath, cfg)
 
-	if fileInfo, err := os.Stat(snapshotPath); err == nil {
-		report.SnapshotSize = fileInfo.Size()
+	if fileInfo, statErr := os.Stat(snapshotPath); statErr == nil {
+		snapshotSize = fileInfo.Size()
 	}
 
 	log.Debug().Str("component", "aws").Msg("Creating AWS session")
-	awsSession, err := newAWSSession(cfg, awsAccess, awsSecret)
-	if err != nil {
-		return fmt.Errorf("aws session: %w", err)
+	awsSession, awsErr := newAWSSession(cfg, awsAccess, awsSecret)
+	if awsErr != nil {
+		err = fmt.Errorf("aws session: %w", awsErr)
+		return 1
 	}
 
 	log.Info().Str("component", "upload").Msg("Starting S3 upload")
-	if err := uploadToS3(ctx, snapshotPath, awsSession, cfg); err != nil {
-		return fmt.Errorf("s3 upload: %w", err)
+	if uploadErr := uploadToS3(ctx, snapshotPath, awsSession, cfg); uploadErr != nil {
+		err = fmt.Errorf("s3 upload: %w", uploadErr)
+		return 1
 	}
 
 	log.Debug().Str("component", "cleanup").Msg("Starting snapshot cleanup")
-	if _, err := cleanupOldSnapshots(ctx, awsSession, cfg); err != nil {
-		log.Warn().Err(err).Msg("Cleanup completed with errors")
+	if _, cleanupErr := cleanupOldSnapshots(ctx, awsSession, cfg); cleanupErr != nil {
+		log.Warn().Err(cleanupErr).Msg("Cleanup completed with errors")
 	}
 
-	if len(creds.PushoverAPI) > 0 || len(creds.PushoverUser) > 0 {
-		if len(creds.PushoverAPI) == 0 || len(creds.PushoverUser) == 0 {
-			log.Warn().Msg("Incomplete Pushover credentials - need both API token and user key")
-		} else {
-			pushoverAPI := secureString(bytes.Clone(creds.PushoverAPI))
-			pushoverUser := secureString(bytes.Clone(creds.PushoverUser))
-
-			if err := sendPushoverNotification(pushoverAPI, pushoverUser, *report); err != nil {
-				log.Warn().Err(err).Msg("Pushover notification failed")
-			}
-		}
-	} else {
-		log.Warn().Msg("Pushover credentials not provided in Vault - skipping notifications")
-	}
-
-	return nil
+	return 0
 }
 
 func LoadConfig() (*Config, error) {
@@ -553,12 +590,19 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCreden
 	return creds, nil
 }
 
-func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, error) {
+func newAWSSession(cfg *Config, accessKey, secretKey secureString) (*session.Session, error) {
+	accessStr := string(accessKey)
+	secretStr := string(secretKey)
+	defer func() {
+		accessKey.Zero()
+		secretKey.Zero()
+	}()
+
 	awsConfig := &aws.Config{
 		Endpoint:         aws.String(cfg.AWSEndpoint),
 		Region:           aws.String(cfg.AWSRegion),
 		S3ForcePathStyle: aws.Bool(true),
-		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
+		Credentials:      credentials.NewStaticCredentials(accessStr, secretStr, ""),
 	}
 
 	if cfg.DebugMode {
@@ -851,73 +895,66 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-func sendPushoverNotification(apiKey, userKey string, report BackupReport) error {
+func sendPushoverNotification(
+	apiKey, userKey secureString,
+	success bool,
+	duration time.Duration,
+	snapshotSize int64,
+	err error,
+) error {
+	apiStr := string(apiKey)
+	userStr := string(userKey)
+	defer func() {
+		apiKey.Zero()
+		userKey.Zero()
+	}()
 
-	if !isValidPushoverToken(apiKey) {
-		errMsg := "invalid Pushover API token"
-		log.Warn().
-			Str("api_key_prefix", redactKey(apiKey)).
-			Int("length", len(apiKey)).
-			Msg(errMsg)
-		return fmt.Errorf("%s (prefix:%s length:%d)",
-			errMsg, redactKey(apiKey), len(apiKey))
+	if !isValidPushoverToken(apiStr) || !isValidPushoverUser(userStr) {
+		return fmt.Errorf("invalid pushover credentials")
 	}
 
-	if !isValidPushoverUser(userKey) {
-		errMsg := "invalid Pushover user key"
-		log.Warn().
-			Str("user_key_prefix", redactKey(userKey)).
-			Int("length", len(userKey)).
-			Msg(errMsg)
-		return fmt.Errorf("%s (prefix:%s length:%d)",
-			errMsg, redactKey(userKey), len(userKey))
-	}
-
-	log.Info().Msg("Sending Pushover notification")
 	message := &bytes.Buffer{}
-
-	statusEmoji := map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success]
+	statusEmoji := map[bool]string{true: "✅ Success", false: "❌ Failed"}[success]
 	fmt.Fprintf(message, "• Status: %s\n", statusEmoji)
+	fmt.Fprintf(message, "• Duration: %s\n", duration.Round(time.Millisecond))
 
-	fmt.Fprintf(message, "• Duration: %s\n", report.Duration.Round(time.Millisecond))
-
-	if report.Success {
-		fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(report.SnapshotSize)))
-	} else if report.Error != "" {
-		formattedError := strings.ReplaceAll(report.Error, ": ", "\n• ")
+	if success {
+		fmt.Fprintf(message, "• Size: %s\n", humanize.Bytes(uint64(snapshotSize)))
+	} else if err != nil {
+		formattedError := strings.ReplaceAll(err.Error(), ": ", "\n• ")
 		fmt.Fprintf(message, "• <b>Failure Reason:</b>\n<pre>%s</pre>", formattedError)
 	}
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	writer.WriteField("token", apiKey)
-	writer.WriteField("user", userKey)
+	writer.WriteField("token", apiStr)
+	writer.WriteField("user", userStr)
 	writer.WriteField("title", "Vault Backup Report")
 	writer.WriteField("message", message.String())
 	writer.WriteField("html", "1")
 	writer.WriteField("priority", map[bool]string{
 		true:  "0",
 		false: "1",
-	}[report.Success])
+	}[success])
 
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close multipart writer: %w", err)
+	if closeErr := writer.Close(); closeErr != nil {
+		return fmt.Errorf("failed to close multipart writer: %w", closeErr)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
+	req, reqErr := http.NewRequestWithContext(ctx, "POST",
 		"https://api.pushover.net/1/messages.json", body)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	if reqErr != nil {
+		return fmt.Errorf("failed to create request: %w", reqErr)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
+	resp, respErr := http.DefaultClient.Do(req)
+	if respErr != nil {
+		return fmt.Errorf("failed to send notification: %w", respErr)
 	}
 	defer resp.Body.Close()
 
@@ -944,14 +981,4 @@ func redactKey(key string) string {
 		return "***"
 	}
 	return key[:1] + "***" + key[len(key)-1:]
-}
-
-func secureString(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	sb := strings.Builder{}
-	sb.Write(b)
-	zeroBytes(b)
-	return sb.String()
 }
