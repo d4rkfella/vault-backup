@@ -338,7 +338,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 	}
 	defer file.Close()
 
-	// Handle gzip decompression
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
 		return false, fmt.Errorf("invalid gzip format: %w", err)
@@ -349,7 +348,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 	expected := make(map[string]string)
 	computed := make(map[string]string)
 
-	// Single pass through the tar archive
 	for {
 		hdr, err := tarReader.Next()
 		if err == io.EOF {
@@ -359,7 +357,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			return false, fmt.Errorf("tar error: %w", err)
 		}
 
-		// Capture SHA256SUMS content
 		if hdr.Name == "SHA256SUMS" {
 			content, err := io.ReadAll(tarReader)
 			if err != nil {
@@ -368,8 +365,21 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			expected = parseSHA256SUMS(content)
 			continue
 		}
+	}
 
-		// Compute checksum for other files
+	for {
+		hdr, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("tar error: %w", err)
+		}
+
+		if _, exists := expected[hdr.Name]; !exists {
+			continue
+		}
+
 		h := sha256.New()
 		if _, err := io.Copy(h, tarReader); err != nil {
 			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
@@ -377,7 +387,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 		computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
 	}
 
-	// Verify all checksums
 	if len(expected) == 0 {
 		return false, fmt.Errorf("SHA256SUMS file missing")
 	}
@@ -393,7 +402,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 		}
 	}
 
-	// Ensure all expected files are present
 	for filename := range expected {
 		if _, exists := computed[filename]; !exists {
 			return false, fmt.Errorf("missing file %s in snapshot", filename)
