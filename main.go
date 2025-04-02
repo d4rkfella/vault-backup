@@ -38,6 +38,25 @@ var (
 	commit  = "none"
 )
 
+func redactURL(url string) string {
+	if url == "" {
+		return "none"
+	}
+	parts := strings.SplitN(url, ".", 2)
+	if len(parts) > 1 {
+		return fmt.Sprintf("***.%s", parts[1])
+	}
+	return "***"
+}
+
+func sanitizePath(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) > 3 {
+		parts[3] = "***"
+	}
+	return strings.Join(parts, "/")
+}
+
 type Config struct {
 	VaultAddr           string
 	S3Bucket            string
@@ -80,11 +99,14 @@ func main() {
 	cfg, _ := LoadConfig()
 
 	if cfg.DebugMode {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
-			Level(zerolog.DebugLevel)
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	} else {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).
-			Level(zerolog.InfoLevel)
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+		log.Logger = log.Output(zerolog.ConsoleWriter{
+			Out:     os.Stderr,
+			NoColor: true,
+		})
 	}
 
 	report := BackupReport{}
@@ -143,14 +165,14 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	log.Debug().Msg("Initializing Vault client")
+	log.Debug().Str("component", "vault").Msg("Initializing client")
 	vaultClient, err := setupVaultClient(cfg)
 	if err != nil {
 		return fmt.Errorf("vault setup: %w", err)
 	}
-	log.Debug().Msg("Vault client initialized")
+	log.Debug().Str("component", "vault").Msg("Client initialized")
 
-	log.Debug().Msg("Fetching credentials from Vault")
+	log.Debug().Str("component", "credentials").Msg("Fetching from Vault")
 	awsAccessKey, awsSecretKey, poAPIKey, poUserKey, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
 	if err != nil {
 		return fmt.Errorf("vault credentials: %w", err)
@@ -158,45 +180,44 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *str
 	*pushoverAPIKey = poAPIKey
 	*pushoverUserKey = poUserKey
 
-	log.Info().Msg("Starting snapshot creation")
+	log.Info().Str("component", "snapshot").Msg("Creation started")
 	snapshotPath, err := createSnapshot(ctx, vaultClient, cfg)
 	if err != nil {
 		return fmt.Errorf("snapshot creation: %w", err)
 	}
 	defer secureDelete(snapshotPath, cfg)
-	log.Info().
-		Str("path", snapshotPath).
-		Msg("Snapshot created")
+	log.Info().Str("path", snapshotPath).Str("component", "snapshot").Msg("Created")
 
 	if fileInfo, err := os.Stat(snapshotPath); err == nil {
 		report.SnapshotSize = fileInfo.Size()
-		log.Debug().Int64("size_bytes", fileInfo.Size()).Msg("Snapshot file size")
+		log.Debug().Str("component", "snapshot").Int64("size_bytes", fileInfo.Size()).Msg("File size")
 	}
 
-	log.Debug().Msg("Creating AWS session")
+	log.Debug().Str("component", "aws").Msg("Creating session")
 	awsSession, err := newAWSSession(cfg, awsAccessKey, awsSecretKey)
 	if err != nil {
 		return fmt.Errorf("aws session: %w", err)
 	}
-	log.Debug().Msg("AWS session established")
+	log.Debug().Str("component", "aws").Msg("Session established")
 
-	log.Info().Msg("Starting S3 upload")
+	log.Info().Str("component", "upload").Msg("Starting S3 upload")
 	uploadStart := time.Now()
 	if err := uploadToS3(ctx, snapshotPath, awsSession, cfg); err != nil {
 		return fmt.Errorf("s3 upload: %w", err)
 	}
 	log.Info().
+		Str("component", "upload").
 		Dur("duration", time.Since(uploadStart)).
-		Msg("S3 upload completed")
+		Msg("Upload completed")
 
-	log.Debug().Msg("Starting snapshot cleanup")
+	log.Debug().Str("component", "cleanup").Msg("Starting snapshot cleanup")
 	snapshotsDeleted, err := cleanupOldSnapshots(ctx, awsSession, cfg)
 	if err != nil {
-		log.Warn().Err(err).Msg("Snapshot cleanup failed")
+		log.Warn().Str("component", "cleanup").Err(err).Msg("Cleanup failed")
 	} else if snapshotsDeleted {
-		log.Info().Msg("Old snapshots cleaned up")
+		log.Info().Str("component", "cleanup").Msg("Old snapshots removed")
 	} else {
-		log.Info().Msg("No old snapshots found for cleanup")
+		log.Info().Str("component", "cleanup").Msg("No old snapshots found")
 	}
 
 	return nil
@@ -226,14 +247,15 @@ func LoadConfig() (*Config, error) {
 }
 
 func setupSystemResources(cfg *Config) {
-	if cfg.DebugMode {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	} else {
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
+	log.Debug().
+		Str("component", "security").
+		Bool("secure_delete", cfg.SecureDelete).
+		Bool("debug_mode", cfg.DebugMode).
+		Float64("memory_ratio", cfg.MemoryLimitRatio).
+		Msg("Security configuration")
 
 	if _, err := maxprocs.Set(maxprocs.Logger(log.Printf)); err != nil {
-		log.Warn().Err(err).Msg("Failed to set GOMAXPROCS")
+		log.Warn().Str("component", "system").Err(err).Msg("Failed to set GOMAXPROCS")
 	}
 
 	memLimit, err := memlimit.SetGoMemLimitWithOpts(
@@ -246,16 +268,20 @@ func setupSystemResources(cfg *Config) {
 		memlimit.WithRatio(cfg.MemoryLimitRatio),
 	)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to set memory limit")
+		log.Warn().Str("component", "system").Err(err).Msg("Failed to set memory limit")
 	} else {
-		log.Info().Str("limit", fmt.Sprintf("%dMB", memLimit/1024/1024)).Msg("Memory limit configured")
+		log.Info().
+			Str("component", "system").
+			Str("limit", fmt.Sprintf("%dMB", memLimit/1024/1024)).
+			Msg("Memory configured")
 	}
 
 	log.Info().
 		Str("version", version).
 		Str("commit", commit).
 		Str("go_version", runtime.Version()).
-		Msg("Starting vault-backup")
+		Str("component", "system").
+		Msg("Application starting")
 }
 
 func setupVaultClient(cfg *Config) (*api.Client, error) {
@@ -314,6 +340,8 @@ func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (strin
 }
 
 func verifyInternalChecksums(snapshotPath string) (bool, error) {
+	log.Debug().Str("component", "validation").Msg("Starting verification")
+
 	file, err := os.Open(snapshotPath)
 	if err != nil {
 		return false, fmt.Errorf("failed to open snapshot: %w", err)
@@ -345,6 +373,10 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 				return false, fmt.Errorf("failed to read SHA256SUMS: %w", err)
 			}
 			expected = parseSHA256SUMS(content)
+			log.Debug().
+				Str("component", "validation").
+				Int("files_expected", len(expected)).
+				Msg("Parsed checksum file")
 			break
 		}
 	}
@@ -388,6 +420,10 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 		}
 	}
 
+	log.Debug().
+		Str("component", "validation").
+		Int("files_checked", len(computed)).
+		Msg("Verification successful")
 	return true, nil
 }
 
@@ -460,11 +496,12 @@ func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, 
 			safeReq.Header.Del("X-Amz-Security-Token")
 
 			log.Debug().
+				Str("component", "aws").
 				Str("service", r.ClientInfo.ServiceName).
 				Str("operation", r.Operation.Name).
 				Str("method", safeReq.Method).
-				Str("path", safeReq.URL.Path).
-				Msg("AWS API Request")
+				Str("path", sanitizePath(safeReq.URL.Path)).
+				Msg("API request")
 		})
 	}
 
@@ -473,9 +510,11 @@ func newAWSSession(cfg *Config, accessKey, secretKey string) (*session.Session, 
 	}
 
 	log.Debug().
+		Str("component", "aws").
 		Str("region", *sess.Config.Region).
-		Str("endpoint", cfg.AWSEndpoint).
-		Msg("AWS session configured")
+		Str("endpoint", redactURL(cfg.AWSEndpoint)).
+		Bool("encrypted", true).
+		Msg("Session configured")
 
 	return sess, nil
 }
@@ -497,10 +536,10 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 	switch cfg.S3ChecksumAlgorithm {
 	case "CRC32":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
-		log.Debug().Msg("Using AWS-computed CRC32 checksum")
+		log.Debug().Str("component", "upload").Msg("Using AWS CRC32 checksum")
 	case "SHA256":
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmSha256)
-		log.Debug().Msg("Using AWS-computed SHA256 checksum")
+		log.Debug().Str("component", "upload").Msg("Using AWS SHA256 checksum")
 	default:
 		return fmt.Errorf("unsupported checksum algorithm: %s", cfg.S3ChecksumAlgorithm)
 	}
@@ -517,6 +556,7 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 		done := make(chan error)
 		fileInfo, _ := file.Stat()
 		totalSize := fileInfo.Size()
+		uploadStart := time.Now()
 
 		go func() {
 			_, err = svc.PutObjectWithContext(ctx, putObjectInput)
@@ -527,21 +567,27 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 			select {
 			case <-progressTicker.C:
 				currentPos, _ := file.Seek(0, io.SeekCurrent)
+				elapsed := time.Since(uploadStart).Seconds()
+				throughput := float64(currentPos) / elapsed
+
 				log.Debug().
-					Int64("bytes_uploaded", currentPos).
-					Int64("total_bytes", totalSize).
+					Str("component", "upload").
+					Int64("bytes", currentPos).
+					Int64("total", totalSize).
 					Str("progress", fmt.Sprintf("%.1f%%", float64(currentPos)/float64(totalSize)*100)).
-					Msg("Upload status")
+					Str("throughput", humanize.Bytes(uint64(throughput))).
+					Msg("Transfer status")
 
 			case err := <-done:
 				if err != nil {
 					return fmt.Errorf("s3 upload failed: %w", err)
 				}
 				log.Info().
+					Str("component", "upload").
 					Str("bucket", cfg.S3Bucket).
 					Str("key", filepath.Base(path)).
 					Int64("size_bytes", totalSize).
-					Msg("Upload completed")
+					Msg("Completed")
 				return nil
 
 			case <-ctx.Done():
@@ -556,14 +602,20 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 	}
 
 	log.Info().
+		Str("component", "upload").
 		Str("bucket", cfg.S3Bucket).
 		Str("key", filepath.Base(path)).
-		Msg("Upload completed")
+		Msg("Completed")
 
 	return nil
 }
 
 func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config) (bool, error) {
+	log.Debug().
+		Str("component", "cleanup").
+		Int("retention_days", cfg.RetentionDays).
+		Msg("Starting cleanup")
+
 	cutoff := time.Now().AddDate(0, 0, -cfg.RetentionDays)
 	s3Client := s3.New(sess)
 	var snapshotsDeleted bool
@@ -571,17 +623,28 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 	err := s3Client.ListObjectsV2PagesWithContext(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(cfg.S3Bucket),
 	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+		log.Debug().
+			Str("component", "cleanup").
+			Int("objects_scanned", len(page.Contents)).
+			Msg("Processing page")
+
 		for _, obj := range page.Contents {
 			if obj.LastModified.Before(cutoff) && strings.HasPrefix(*obj.Key, "vaultsnapshot-") {
+				log.Debug().
+					Str("component", "cleanup").
+					Str("object", sanitizePath(*obj.Key)).
+					Time("modified", *obj.LastModified).
+					Msg("Candidate found")
+
 				if _, err := s3Client.DeleteObjectWithContext(ctx, &s3.DeleteObjectInput{
 					Bucket: aws.String(cfg.S3Bucket),
 					Key:    obj.Key,
 				}); err != nil {
-					log.Warn().Err(err).Str("key", *obj.Key).Msg("Delete failed")
+					log.Warn().Str("component", "cleanup").Err(err).Str("key", *obj.Key).Msg("Delete failed")
 					continue
 				}
 				snapshotsDeleted = true
-				log.Info().Str("key", *obj.Key).Msg("Deleted old snapshot")
+				log.Info().Str("component", "cleanup").Str("key", sanitizePath(*obj.Key)).Msg("Deleted")
 			}
 		}
 		return !lastPage
@@ -596,18 +659,18 @@ func cleanupOldSnapshots(ctx context.Context, sess *session.Session, cfg *Config
 
 func secureDelete(path string, cfg *Config) {
 	if cfg.DebugMode {
-		log.Info().Str("path", path).Msg("DEBUG_MODE: Skipping deletion")
+		log.Info().Str("path", path).Str("component", "security").Msg("Skipping deletion")
 		return
 	}
 
 	if err := os.Remove(path); err != nil {
-		log.Warn().Err(err).Str("path", path).Msg("Delete failed")
+		log.Warn().Str("component", "security").Err(err).Str("path", path).Msg("Delete failed")
 		return
 	}
 
 	if cfg.SecureDelete {
 		if err := overwriteFile(path); err != nil {
-			log.Warn().Err(err).Str("path", path).Msg("Secure delete failed")
+			log.Warn().Str("component", "security").Err(err).Str("path", path).Msg("Secure delete failed")
 		}
 	}
 }
