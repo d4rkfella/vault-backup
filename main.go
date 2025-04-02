@@ -126,14 +126,8 @@ func main() {
 	report := BackupReport{}
 	startTime := time.Now()
 	exitCode := 0
-	var pushoverAPIKey, pushoverUserKey []byte
 
 	defer func() {
-		if len(pushoverAPIKey) > 0 || len(pushoverUserKey) > 0 {
-			zeroBytes(pushoverAPIKey)
-			zeroBytes(pushoverUserKey)
-		}
-
 		if r := recover(); r != nil {
 			report.Error = fmt.Sprintf("panic: %v", r)
 			log.Error().
@@ -149,19 +143,6 @@ func main() {
 			log.Error().EmbedObject(report).Msg("Backup failed")
 		}
 
-		if len(pushoverAPIKey) > 0 && len(pushoverUserKey) > 0 {
-			apiClone := bytes.Clone(pushoverAPIKey)
-			userClone := bytes.Clone(pushoverUserKey)
-			defer zeroBytes(apiClone)
-			defer zeroBytes(userClone)
-
-			if err := sendPushoverNotification(apiClone, userClone, report); err != nil {
-				log.Warn().Err(err).Msg("Failed to send Pushover notification")
-			}
-		} else {
-			log.Debug().Msg("Skipping Pushover notification - credentials not found in Vault")
-		}
-
 		if report.Error != "" {
 			var errChain []string
 			for unwrapped := errors.New(report.Error); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
@@ -175,7 +156,7 @@ func main() {
 		os.Exit(exitCode)
 	}()
 
-	if err := run(&report, cfg, &pushoverAPIKey, &pushoverUserKey); err != nil {
+	if err := run(&report, cfg); err != nil {
 		report.Error = err.Error()
 		exitCode = 1
 		return
@@ -183,7 +164,7 @@ func main() {
 	report.Success = true
 }
 
-func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]byte) error {
+func run(report *BackupReport, cfg *Config) error {
 	setupSystemResources(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -204,7 +185,6 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]b
 	if err != nil {
 		return fmt.Errorf("vault setup: %w", err)
 	}
-	log.Debug().Str("component", "vault").Msg("Client initialized")
 
 	log.Debug().Str("component", "credentials").Msg("Fetching from Vault")
 	creds, err := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
@@ -218,8 +198,12 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]b
 		zeroBytes(creds.PushoverUser)
 	}()
 
-	*pushoverAPIKey = bytes.Clone(creds.PushoverAPI)
-	*pushoverUserKey = bytes.Clone(creds.PushoverUser)
+	poAPI := bytes.Clone(creds.PushoverAPI)
+	poUser := bytes.Clone(creds.PushoverUser)
+	defer func() {
+		zeroBytes(poAPI)
+		zeroBytes(poUser)
+	}()
 
 	awsAccess := string(bytes.Clone(creds.AWSAccess))
 	awsSecret := string(bytes.Clone(creds.AWSSecret))
@@ -234,14 +218,9 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]b
 		return fmt.Errorf("snapshot creation: %w", err)
 	}
 	defer secureDelete(snapshotPath, cfg)
-	log.Info().Str("path", snapshotPath).Str("component", "snapshot").Msg("Created")
 
 	if fileInfo, err := os.Stat(snapshotPath); err == nil {
 		report.SnapshotSize = fileInfo.Size()
-		log.Debug().
-			Str("component", "snapshot").
-			Int64("size_bytes", fileInfo.Size()).
-			Msg("File size verified")
 	}
 
 	log.Debug().Str("component", "aws").Msg("Creating AWS session")
@@ -249,37 +228,23 @@ func run(report *BackupReport, cfg *Config, pushoverAPIKey, pushoverUserKey *[]b
 	if err != nil {
 		return fmt.Errorf("aws session: %w", err)
 	}
-	log.Debug().Str("component", "aws").Msg("AWS session established")
 
 	log.Info().Str("component", "upload").Msg("Starting S3 upload")
-	uploadStart := time.Now()
 	if err := uploadToS3(ctx, snapshotPath, awsSession, cfg); err != nil {
 		return fmt.Errorf("s3 upload: %w", err)
 	}
-	log.Info().
-		Str("component", "upload").
-		Dur("duration", time.Since(uploadStart)).
-		Msg("Upload completed successfully")
 
 	log.Debug().Str("component", "cleanup").Msg("Starting snapshot cleanup")
-	deletedCount, err := cleanupOldSnapshots(ctx, awsSession, cfg)
-	if err != nil {
-		log.Warn().
-			Str("component", "cleanup").
-			Err(err).
-			Msg("Cleanup completed with errors")
-	} else {
-		switch {
-		case deletedCount > 0:
-			log.Info().
-				Str("component", "cleanup").
-				Int("deleted_count", deletedCount).
-				Msg("Successfully removed old snapshots")
-		default:
-			log.Info().
-				Str("component", "cleanup").
-				Msg("No snapshots eligible for deletion")
+	if _, err := cleanupOldSnapshots(ctx, awsSession, cfg); err != nil {
+		log.Warn().Err(err).Msg("Cleanup completed with errors")
+	}
+
+	if len(poAPI) > 0 && len(poUser) > 0 {
+		if err := sendPushoverNotification(poAPI, poUser, *report); err != nil {
+			log.Warn().Err(err).Msg("Pushover notification failed")
 		}
+	} else {
+		log.Debug().Msg("Skipping Pushover - missing credentials")
 	}
 
 	return nil
