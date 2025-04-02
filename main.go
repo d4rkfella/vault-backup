@@ -900,8 +900,8 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 		return errors.New("empty Pushover credentials")
 	}
 
-	apiKeyStr := strings.TrimSpace(string(apiKey))
-	userKeyStr := strings.TrimSpace(string(userKey))
+	apiKeyStr := string(bytes.Trim(apiKey, "\x00 \n"))
+	userKeyStr := string(bytes.Trim(userKey, "\x00 \n"))
 	defer func() {
 		zeroBytes([]byte(apiKeyStr))
 		zeroBytes([]byte(userKeyStr))
