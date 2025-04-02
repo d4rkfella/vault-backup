@@ -365,20 +365,6 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 			expected = parseSHA256SUMS(content)
 			continue
 		}
-	}
-
-	for {
-		hdr, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, fmt.Errorf("tar error: %w", err)
-		}
-
-		if _, exists := expected[hdr.Name]; !exists {
-			continue
-		}
 
 		h := sha256.New()
 		if _, err := io.Copy(h, tarReader); err != nil {
