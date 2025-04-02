@@ -411,7 +411,7 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 
 	if cfg.S3ChecksumAlgorithm == "CRC32" {
 		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
-		putObjectInput.ChecksumCRC32 = aws.String(checksum)
+		putObjectInput.ChecksumCRC32 = aws.String(base64.StdEncoding.EncodeToString(checksum))
 		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using CRC32 checksum algorithm")
 	} else {
 		putObjectInput.ChecksumSHA256 = aws.String(checksum)
