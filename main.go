@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -299,28 +300,100 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, string, error) {
 	snapshotPath := filepath.Join(cfg.SnapshotPath, fmt.Sprintf("vaultsnapshot-%s.snap", time.Now().Format("20060102-150405")))
 
-	file, err := os.OpenFile(snapshotPath, os.O_CREATE|os.O_RDWR, 0600)
+	file, err := os.Create(snapshotPath)
 	if err != nil {
 		return "", "", fmt.Errorf("file creation: %w", err)
 	}
 	defer file.Close()
 
-	var h hash.Hash
+	var s3Hash hash.Hash
 	if cfg.S3ChecksumAlgorithm == "CRC32" {
-		h = crc32.NewIEEE()
+		s3Hash = crc32.NewIEEE()
 	} else {
-		h = sha256.New()
+		s3Hash = sha256.New()
 	}
 
-	writer := io.MultiWriter(file, h)
+	writer := io.MultiWriter(file, s3Hash)
 
 	if err := client.Sys().RaftSnapshotWithContext(ctx, writer); err != nil {
 		os.Remove(snapshotPath)
 		return "", "", fmt.Errorf("raft snapshot: %w", err)
 	}
 
-	checksum := fmt.Sprintf("%x", h.Sum(nil))
-	return snapshotPath, checksum, nil
+	valid, err := verifyInternalChecksums(snapshotPath)
+	if err != nil || !valid {
+		os.Remove(snapshotPath)
+		return "", "", fmt.Errorf("internal checksum verification failed: %w", err)
+	}
+
+	s3Checksum := fmt.Sprintf("%x", s3Hash.Sum(nil))
+	return snapshotPath, s3Checksum, nil
+}
+
+func verifyInternalChecksums(snapshotPath string) (bool, error) {
+	file, err := os.Open(snapshotPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to open snapshot: %w", err)
+	}
+	defer file.Close()
+
+	tarReader := tar.NewReader(file)
+	expected := make(map[string]string)
+
+	for {
+		hdr, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("tar error: %w", err)
+		}
+
+		if hdr.Name == "SHA256SUMS" {
+			content, _ := io.ReadAll(tarReader)
+			for _, line := range strings.Split(string(content), "\n") {
+				parts := strings.Fields(line)
+				if len(parts) == 2 {
+					expected[parts[1]] = parts[0]
+				}
+			}
+			break
+		}
+	}
+
+	if len(expected) == 0 {
+		return false, fmt.Errorf("missing SHA256SUMS file")
+	}
+
+	file.Seek(0, 0)
+	tarReader = tar.NewReader(file)
+
+	for {
+		hdr, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("tar error: %w", err)
+		}
+
+		if hdr.Name == "SHA256SUMS" {
+			continue
+		}
+
+		h := sha256.New()
+		if _, err := io.Copy(h, tarReader); err != nil {
+			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
+		}
+
+		actual := fmt.Sprintf("%x", h.Sum(nil))
+		expectedSum, exists := expected[hdr.Name]
+		if !exists || actual != expectedSum {
+			return false, fmt.Errorf("checksum mismatch for %s", hdr.Name)
+		}
+	}
+
+	return true, nil
 }
 
 func getCredentialsFromVault(client *api.Client, secretPath string) (string, string, string, string, error) {
