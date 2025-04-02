@@ -907,18 +907,26 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 		zeroBytes([]byte(userKeyStr))
 	}()
 
-	if !isValidPushoverToken(apiKeyStr) || !isValidPushoverUser(userKeyStr) {
+	if !isValidPushoverToken(apiKeyStr) {
 		log.Debug().
 			Str("api_key_prefix", redactKey(apiKeyStr)).
+			Msg("Invalid Pushover API token format")
+		return fmt.Errorf("invalid API token format")
+	}
+
+	if !isValidPushoverUser(userKeyStr) {
+		log.Debug().
 			Str("user_key_prefix", redactKey(userKeyStr)).
-			Msg("Invalid credential format")
-		return errors.New("invalid Pushover credential format")
+			Msg("Invalid Pushover user key format")
+		return fmt.Errorf("invalid user key format")
 	}
 
 	log.Info().Msg("Sending Pushover notification")
-
 	message := &bytes.Buffer{}
-	fmt.Fprintf(message, "• Status: %s\n", map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success])
+
+	statusEmoji := map[bool]string{true: "✅ Success", false: "❌ Failed"}[report.Success]
+	fmt.Fprintf(message, "• Status: %s\n", statusEmoji)
+
 	fmt.Fprintf(message, "• Duration: %s\n", report.Duration.Round(time.Millisecond))
 
 	if report.Success {
@@ -942,7 +950,7 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 	}[report.Success])
 
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close writer: %w", err)
+		return fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -951,21 +959,21 @@ func sendPushoverNotification(apiKey, userKey []byte, report BackupReport) error
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		"https://api.pushover.net/1/messages.json", body)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("send notification: %w", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("pushover API error: %s (%d)",
-			strings.TrimSpace(string(respBody)),
-			resp.StatusCode)
+		return fmt.Errorf("pushover API error (HTTP %d): %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(respBody)))
 	}
 
 	return nil
