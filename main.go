@@ -294,22 +294,28 @@ func setupVaultClient(cfg *Config) (*api.Client, error) {
 
 func createSnapshot(ctx context.Context, client *api.Client, cfg *Config) (string, string, error) {
 	snapshotPath := filepath.Join(cfg.SnapshotPath, fmt.Sprintf("vaultsnapshot-%s.snap", time.Now().Format("20060102-150405")))
-
+	
 	file, err := os.OpenFile(snapshotPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return "", "", fmt.Errorf("file creation: %w", err)
 	}
 	defer file.Close()
 
-	hash := sha256.New()
-	writer := io.MultiWriter(file, hash)
-
+	var h hash.Hash
+	if cfg.S3ChecksumAlgorithm == "CRC32" {
+		h = crc32.NewIEEE()
+	} else {
+		h = sha256.New()
+	}
+	
+	writer := io.MultiWriter(file, h)
+	
 	if err := client.Sys().RaftSnapshotWithContext(ctx, writer); err != nil {
 		os.Remove(snapshotPath)
 		return "", "", fmt.Errorf("raft snapshot: %w", err)
 	}
-
-	checksum := fmt.Sprintf("%x", hash.Sum(nil))
+	
+	checksum := fmt.Sprintf("%x", h.Sum(nil))
 	return snapshotPath, checksum, nil
 }
 
@@ -401,9 +407,10 @@ func uploadToS3(ctx context.Context, path, checksum string, sess *session.Sessio
 		ServerSideEncryption: aws.String("AES256"),
 	}
 
-	if cfg.S3ChecksumAlgorithm != "" {
-		putObjectInput.ChecksumAlgorithm = aws.String(cfg.S3ChecksumAlgorithm)
-		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using custom checksum algorithm")
+	if cfg.S3ChecksumAlgorithm == "CRC32" {
+		putObjectInput.ChecksumAlgorithm = aws.String(s3.ChecksumAlgorithmCrc32)
+		putObjectInput.ChecksumCRC32 = aws.String(checksum)
+		log.Debug().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Using CRC32 checksum algorithm")
 	} else {
 		putObjectInput.ChecksumSHA256 = aws.String(checksum)
 	}
