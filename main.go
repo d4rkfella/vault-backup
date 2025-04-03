@@ -117,7 +117,13 @@ func (ss *secureString) Zero() {
 }
 
 func main() {
-	cfg, _ := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		log.Fatal().
+			Err(err).
+			Str("component", "configuration").
+			Msg("Invalid configuration")
+	}
 
 	if cfg.DebugMode {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -130,6 +136,22 @@ func main() {
 		})
 	}
 
+	setupSystemResources(cfg)
+
+	mainCtx, mainCancel := context.WithCancel(context.Background())
+	defer mainCancel()
+
+	ctx, cancel := context.WithTimeout(mainCtx, 10*time.Minute)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Warn().Msg("Starting graceful shutdown")
+		mainCancel()
+	}()
+
 	exitCode := 0
 	defer func() {
 		if r := recover(); r != nil {
@@ -138,29 +160,27 @@ func main() {
 				Msg(fmt.Sprintf("Unexpected panic: %v", r))
 			exitCode = 1
 		}
-		os.Exit(exitCode)
 	}()
 
-	exitCode = run(cfg)
+	exitCode = run(ctx, cfg)
+	os.Exit(exitCode)
 }
 
-func run(cfg *Config) int {
+func run(ctx context.Context, cfg *Config) int {
 	startTime := time.Now()
+	success := true
+	var pushoverAPI, pushoverUser secureString
 	var err error
 	var snapshotSize int64
-	var pushoverAPI, pushoverUser secureString
 	var sendPushover bool
 
 	defer func() {
 		if r := recover(); r != nil {
+			success = false
 			err = fmt.Errorf("panic: %v", r)
-			log.Error().
-				Str("stack", string(debug.Stack())).
-				Msg("Panic occurred during backup")
 		}
 
 		duration := time.Since(startTime)
-		success := err == nil
 
 		if sendPushover {
 			if notifyErr := sendPushoverNotification(
@@ -193,39 +213,23 @@ func run(cfg *Config) int {
 				for unwrapped := err; unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
 					errChain = append(errChain, unwrapped.Error())
 				}
-				log.Error().
-					Strs("error_chain", errChain).
-					Msg("Failure breakdown")
 			}
 		}
 	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		log.Warn().Msg("Starting graceful shutdown")
-		cancel()
-		time.Sleep(30 * time.Second)
-		os.Exit(1)
-	}()
-
-	setupSystemResources(cfg)
 
 	log.Debug().Str("component", "vault").Msg("Initializing client")
 	vaultClient, vaultErr := setupVaultClient(cfg)
 	if vaultErr != nil {
 		err = fmt.Errorf("vault setup: %w", vaultErr)
+		success = false
 		return 1
 	}
 
-	log.Debug().Str("component", "credentials").Msg("Fetching from Vault")
+	log.Info().Str("component", "credentials").Msg("Fetching credentials")
 	creds, credsErr := getCredentialsFromVault(vaultClient, cfg.VaultSecretPath)
 	if credsErr != nil {
-		err = fmt.Errorf("vault credentials: %w", credsErr)
+		err = fmt.Errorf("fetching secrets: %w", credsErr)
+		success = false
 		return 1
 	}
 	defer func() {
@@ -248,10 +252,11 @@ func run(cfg *Config) int {
 		awsSecret.Zero()
 	}()
 
-	log.Info().Str("component", "snapshot").Msg("Creation started")
+	log.Info().Str("component", "snapshot").Msg("Creating snapshot")
 	snapshotPath, snapshotErr := createSnapshot(ctx, vaultClient, cfg)
 	if snapshotErr != nil {
 		err = fmt.Errorf("snapshot creation: %w", snapshotErr)
+		success = false
 		return 1
 	}
 	defer secureDelete(snapshotPath, cfg)
@@ -260,20 +265,22 @@ func run(cfg *Config) int {
 		snapshotSize = fileInfo.Size()
 	}
 
-	log.Debug().Str("component", "aws").Msg("Creating AWS session")
+	log.Info().Str("component", "aws").Msg("Creating AWS session")
 	awsSession, awsErr := newAWSSession(cfg, awsAccess, awsSecret)
 	if awsErr != nil {
 		err = fmt.Errorf("aws session: %w", awsErr)
+		success = false
 		return 1
 	}
 
 	log.Info().Str("component", "upload").Msg("Starting S3 upload")
 	if uploadErr := uploadToS3(ctx, snapshotPath, awsSession, cfg); uploadErr != nil {
 		err = fmt.Errorf("s3 upload: %w", uploadErr)
+		success = false
 		return 1
 	}
 
-	log.Debug().Str("component", "cleanup").Msg("Starting snapshot cleanup")
+	log.Info().Str("component", "cleanup").Msg("Starting snapshot cleanup")
 	if _, cleanupErr := cleanupOldSnapshots(ctx, awsSession, cfg); cleanupErr != nil {
 		log.Warn().Err(cleanupErr).Msg("Cleanup completed with errors")
 	}
@@ -282,14 +289,24 @@ func run(cfg *Config) int {
 }
 
 func LoadConfig() (*Config, error) {
+	requiredVars := []string{
+		"S3BUCKET",
+		"VAULT_K8S_ROLE",
+		"VAULT_SECRET_PATH",
+	}
+
+	if err := checkRequiredEnvVars(requiredVars); err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		VaultAddr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
-		S3Bucket:            requireEnv("S3BUCKET"),
+		S3Bucket:            os.Getenv("S3BUCKET"),
 		AWSEndpoint:         getEnv("AWS_ENDPOINT_URL", ""),
 		AWSRegion:           getEnv("AWS_REGION", "auto"),
 		RetentionDays:       getEnvInt("VAULT_BACKUP_RETENTION", 7),
-		VaultKubernetesRole: requireEnv("VAULT_K8S_ROLE"),
-		VaultSecretPath:     requireEnv("VAULT_SECRET_PATH"),
+		VaultKubernetesRole: os.Getenv("VAULT_K8S_ROLE"),
+		VaultSecretPath:     os.Getenv("VAULT_SECRET_PATH"),
 		SnapshotPath:        getEnv("SNAPSHOT_PATH", "/tmp"),
 		MemoryLimitRatio:    getEnvFloat("MEMORY_LIMIT_RATIO", 0.8),
 		S3ChecksumAlgorithm: getEnv("S3_CHECKSUM_ALGORITHM", ""),
@@ -297,16 +314,11 @@ func LoadConfig() (*Config, error) {
 		SecureDelete:        getEnvBool("SECURE_DELETE", false),
 	}
 
-	validAlgorithms := map[string]bool{
-		"CRC32":  true,
-		"CRC32C": true,
-		"SHA1":   true,
-		"SHA256": true,
-		"":       true,
-	}
-
-	if !validAlgorithms[cfg.S3ChecksumAlgorithm] {
-		return nil, fmt.Errorf("invalid checksum algorithm: %s. Supported: CRC32, CRC32C, SHA1, SHA256", cfg.S3ChecksumAlgorithm)
+	if cfg.S3ChecksumAlgorithm != "" {
+		validAlgorithms := map[string]bool{"CRC32": true, "SHA256": true, "CRC32C": true, "SHA1": true}
+		if !validAlgorithms[cfg.S3ChecksumAlgorithm] {
+			return nil, fmt.Errorf("invalid checksum algorithm: %s. Supported: CRC32, CRC32C, SHA1, SHA256", cfg.S3ChecksumAlgorithm)
+		}
 	}
 
 	if _, err := url.ParseRequestURI(cfg.VaultAddr); err != nil {
@@ -321,13 +333,6 @@ func LoadConfig() (*Config, error) {
 
 	if cfg.MemoryLimitRatio <= 0 || cfg.MemoryLimitRatio > 1 {
 		return nil, errors.New("MEMORY_LIMIT_RATIO must be > 0 and ≤ 1")
-	}
-
-	if cfg.S3ChecksumAlgorithm != "" {
-		allowedAlgos := map[string]bool{"CRC32": true, "SHA256": true}
-		if !allowedAlgos[cfg.S3ChecksumAlgorithm] {
-			return nil, fmt.Errorf("invalid S3_CHECKSUM_ALGORITHM: must be CRC32 or SHA256")
-		}
 	}
 
 	if info, err := os.Stat(cfg.SnapshotPath); err != nil {
@@ -455,7 +460,7 @@ func verifyInternalChecksums(snapshotPath string) (bool, error) {
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
-		return false, fmt.Errorf("invalid gzip format: %w", err)
+		return false, fmt.Errorf("gzip error: %w", err)
 	}
 	defer gzReader.Close()
 
@@ -574,21 +579,12 @@ func getCredentialsFromVault(client *api.Client, secretPath string) (VaultCreden
 	if awsSecret, ok := data["aws_secret_key"].(string); ok {
 		creds.AWSSecret = []byte(strings.TrimSpace(awsSecret))
 	}
-	if len(creds.AWSAccess) == 0 || len(creds.AWSSecret) == 0 {
-		return creds, errors.New("missing AWS credentials in vault secret")
-	}
 
 	if pushoverAPI, ok := data["pushover_api_token"].(string); ok {
 		creds.PushoverAPI = []byte(strings.TrimSpace(pushoverAPI))
 	}
 	if pushoverUser, ok := data["pushover_user_id"].(string); ok {
 		creds.PushoverUser = []byte(strings.TrimSpace(pushoverUser))
-	}
-
-	hasAPI := len(creds.PushoverAPI) > 0
-	hasUser := len(creds.PushoverUser) > 0
-	if hasAPI != hasUser {
-		return creds, fmt.Errorf("partial Pushover credentials - both API token and user key required")
 	}
 
 	return creds, nil
@@ -689,7 +685,7 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 	})
 
 	if cfg.DebugMode {
-		progressTicker := time.NewTicker(15 * time.Second)
+		progressTicker := time.NewTicker(1 * time.Second)
 		defer progressTicker.Stop()
 
 		done := make(chan error)
@@ -719,7 +715,7 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 
 			case err := <-done:
 				if err != nil {
-					return fmt.Errorf("s3 upload failed: %w", err)
+					return fmt.Errorf("upload failed: %w", err)
 				}
 				log.Info().
 					Str("component", "upload").
@@ -737,7 +733,7 @@ func uploadToS3(ctx context.Context, path string, sess *session.Session, cfg *Co
 
 	_, err = svc.PutObjectWithContext(ctx, putObjectInput)
 	if err != nil {
-		return fmt.Errorf("s3 upload failed: %w", err)
+		return fmt.Errorf("upload failed: %w", err)
 	}
 
 	log.Info().
@@ -874,11 +870,13 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-func requireEnv(key string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
+func checkRequiredEnvVars(requiredVars []string) error {
+	for _, key := range requiredVars {
+		if _, exists := os.LookupEnv(key); !exists {
+			return fmt.Errorf("missing required environment variable: %s", key)
+		}
 	}
-	panic(fmt.Sprintf("Required environment variable %s not set", key))
+	return nil
 }
 
 func getEnvInt(key string, defaultValue int) int {
