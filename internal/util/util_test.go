@@ -310,7 +310,7 @@ func TestOverwriteFile(t *testing.T) {
 		err := os.MkdirAll(readOnlyDir, 0444) // Read-only
 		require.NoError(t, err)
 		defer func() { _ = os.Chmod(readOnlyDir, 0755) }() // Ignore error
-		defer func() { _ = os.RemoveAll(readOnlyDir) }() // Ignore error
+		defer func() { _ = os.RemoveAll(readOnlyDir) }()   // Ignore error
 
 		testFile := filepath.Join(readOnlyDir, "cannot-create.txt")
 		content := []byte("test content")

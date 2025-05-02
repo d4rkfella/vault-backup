@@ -297,7 +297,7 @@ func TestClient_Login_TokenSuccess(t *testing.T) {
 	defer teardown()
 
 	// Set VAULT_TOKEN
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
+	_ = os.Setenv("VAULT_TOKEN", "test-token")        // Check errors if needed
 	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }() // Ignore error
 
 	// Set up mock expectations
@@ -339,7 +339,7 @@ func TestClient_Login_TokenRetrySuccess(t *testing.T) {
 	defer teardown()
 
 	// Set VAULT_TOKEN
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
+	_ = os.Setenv("VAULT_TOKEN", "test-token")        // Check errors if needed
 	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }() // Ignore error
 
 	// Set up mock expectations for retry
@@ -538,7 +538,7 @@ func TestClient_GetCredentials_RetrySuccess(t *testing.T) {
 	defer teardown()
 
 	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
+	_ = os.Setenv("VAULT_TOKEN", "test-token")              // Check errors if needed
 	mockClient.On("SetToken", "test-token").Return().Once() // Only need SetToken once for login
 	mockAuth.On("Token").Return(mockToken).Once()
 	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
@@ -674,7 +674,7 @@ func TestClient_GetCredentials_MissingPushoverKeysWithPushoverEnabled(t *testing
 	defer func() { cfg.PushoverEnable = false }() // Reset config
 
 	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
+	_ = os.Setenv("VAULT_TOKEN", "test-token")        // Check errors if needed
 	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }() // Ignore error
 	mockClient.On("Address").Return(cfg.VaultAddr).Once()
 	mockClient.On("SetToken", "test-token").Return()
@@ -1374,8 +1374,8 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		require.NoError(t, err)
 		err = os.Chmod(dir, 0444) // Make read-only
 		require.NoError(t, err)
-		defer func() { _ = os.Chmod(dir, 0755) }()     // Ignore error
-		defer func() { _ = os.RemoveAll(dir) }()         // Ignore error
+		defer func() { _ = os.Chmod(dir, 0755) }() // Ignore error
+		defer func() { _ = os.RemoveAll(dir) }()   // Ignore error
 
 		// Skip verification (though it won't be reached)
 		cfg.SkipSnapshotVerify = true

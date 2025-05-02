@@ -195,7 +195,7 @@ func TestLoadConfig_DefaultsAndCorrections(t *testing.T) {
 	_ = os.Unsetenv("SNAPSHOT_PATH")
 	_ = os.Unsetenv("AWS_ENDPOINT")
 	_ = os.Unsetenv("VAULT_KUBERNETES_ROLE")
-	_ = os.Unsetenv("RETENTION_PERIOD") // Unset to test default, override above doesn't make sense
+	_ = os.Unsetenv("RETENTION_PERIOD")              // Unset to test default, override above doesn't make sense
 	t.Setenv("RETENTION_PERIOD", "invalid-duration") // Reset for test
 
 	// We need to temporarily set SNAPSHOT_PATH for the write check if not set

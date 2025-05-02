@@ -5,7 +5,6 @@ go 1.24.2
 require (
 	github.com/KimMachineGun/automemlimit v0.7.1
 	github.com/aws/aws-sdk-go v1.55.7
-	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/hashicorp/vault/api v1.16.0
 	github.com/hashicorp/vault/api/auth/kubernetes v0.9.0
@@ -15,6 +14,7 @@ require (
 )
 
 require (
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
