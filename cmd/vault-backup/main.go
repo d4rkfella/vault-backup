@@ -165,8 +165,8 @@ func run(ctx context.Context, cfg *config.Config) int {
 	// --- Main Backup Logic ---
 
 	log.Debug().Str("component", "vault").Msg("Initializing Vault client")
-	// Call NewClient first
-	vaultClient, err := vault.NewClient(cfg, nil) // Pass nil to create real client
+	// Create a new vault client with the config
+	vaultClient, err := vault.NewClient(cfg, nil) // Pass nil to use the real Vault API client
 	if err != nil {
 		runErr = fmt.Errorf("vault client creation failed: %w", err)
 		success = false

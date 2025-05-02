@@ -210,15 +210,85 @@ type Client struct {
 	// No logger here, use global log or pass explicitly to methods if needed
 }
 
+// vaultAPIClientAdapter adapts the HashiCorp Vault API client to our VaultAPIClient interface
+type vaultAPIClientAdapter struct {
+	client *api.Client
+}
+
+func (a *vaultAPIClientAdapter) Auth() AuthAPI {
+	return &authAPIAdapter{a.client.Auth()}
+}
+
+func (a *vaultAPIClientAdapter) Logical() LogicalAPI {
+	return &logicalAPIAdapter{a.client.Logical()}
+}
+
+func (a *vaultAPIClientAdapter) Sys() SysAPI {
+	return &sysAPIAdapter{a.client.Sys()}
+}
+
+func (a *vaultAPIClientAdapter) SetToken(v string) {
+	a.client.SetToken(v)
+}
+
+func (a *vaultAPIClientAdapter) Token() string {
+	return a.client.Token()
+}
+
+func (a *vaultAPIClientAdapter) Address() string {
+	return a.client.Address()
+}
+
+// authAPIAdapter adapts the HashiCorp Vault Auth API to our AuthAPI interface
+type authAPIAdapter struct {
+	auth *api.Auth
+}
+
+func (a *authAPIAdapter) Login(ctx context.Context, authMethod api.AuthMethod) (*api.Secret, error) {
+	return a.auth.Login(ctx, authMethod)
+}
+
+func (a *authAPIAdapter) Token() TokenAPI {
+	return &tokenAPIAdapter{token: a.auth}
+}
+
+// tokenAPIAdapter adapts the HashiCorp Vault Token API to our TokenAPI interface
+type tokenAPIAdapter struct {
+	token *api.Auth
+}
+
+func (a *tokenAPIAdapter) LookupSelfWithContext(ctx context.Context) (*api.Secret, error) {
+	return a.token.Token().LookupSelfWithContext(ctx)
+}
+
+func (a *tokenAPIAdapter) RevokeSelfWithContext(ctx context.Context, token string) error {
+	return a.token.Token().RevokeSelfWithContext(ctx, token)
+}
+
+// logicalAPIAdapter adapts the HashiCorp Vault Logical API to our LogicalAPI interface
+type logicalAPIAdapter struct {
+	logical *api.Logical
+}
+
+func (a *logicalAPIAdapter) ReadWithContext(ctx context.Context, path string) (*api.Secret, error) {
+	return a.logical.ReadWithContext(ctx, path)
+}
+
+// sysAPIAdapter adapts the HashiCorp Vault Sys API to our SysAPI interface
+type sysAPIAdapter struct {
+	sys *api.Sys
+}
+
+func (a *sysAPIAdapter) RaftSnapshotWithContext(ctx context.Context, w io.Writer) error {
+	return a.sys.RaftSnapshotWithContext(ctx, w)
+}
+
 // NewClient creates a new Vault client wrapper. It does NOT authenticate yet.
 // Authentication happens in Login(). Accepts an optional apiClient for testing.
+// If apiClient is nil, a real Vault API client will be created.
 func NewClient(cfg *config.Config, apiClient VaultAPIClient) (*Client, error) {
 	if cfg == nil {
 		return nil, errors.New("config cannot be nil")
-	}
-
-	if apiClient == nil {
-		return nil, errors.New("API client cannot be nil")
 	}
 
 	if cfg.VaultAddr == "" {
@@ -231,6 +301,17 @@ func NewClient(cfg *config.Config, apiClient VaultAPIClient) (*Client, error) {
 
 	if cfg.SnapshotPath == "" {
 		return nil, errors.New("snapshot path cannot be empty")
+	}
+
+	// If no API client is provided, create a real one
+	if apiClient == nil {
+		client, err := api.NewClient(&api.Config{
+			Address: cfg.VaultAddr,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Vault API client: %w", err)
+		}
+		apiClient = &vaultAPIClientAdapter{client: client}
 	}
 
 	return &Client{
