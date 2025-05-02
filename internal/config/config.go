@@ -42,7 +42,6 @@ func LoadConfig() (*Config, error) {
 	requiredVars := []string{
 		"VAULT_ADDR",
 		"S3_BUCKET",
-		"AWS_REGION",
 		"VAULT_SECRET_PATH",
 	}
 

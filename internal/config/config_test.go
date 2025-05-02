@@ -65,7 +65,6 @@ func TestLoadConfig_MissingRequired(t *testing.T) {
 	}{
 		{"Missing VAULT_ADDR", "VAULT_ADDR", "VAULT_ADDR"},
 		{"Missing S3_BUCKET", "S3_BUCKET", "S3_BUCKET"},
-		{"Missing AWS_REGION", "AWS_REGION", "AWS_REGION"},
 		{"Missing VAULT_SECRET_PATH", "VAULT_SECRET_PATH", "VAULT_SECRET_PATH"},
 	}
 
@@ -117,7 +116,7 @@ func TestLoadConfig_ValidationErrors(t *testing.T) {
 
 		assert.Nil(t, cfg)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "VAULT_ADDR must start with http:// or https://")
+		assert.Contains(t, err.Error(), "invalid VAULT_ADDR format: must start with http:// or https://")
 	})
 
 	t.Run("SnapshotPathDoesNotExist", func(t *testing.T) {
@@ -179,24 +178,19 @@ func TestLoadConfig_DefaultsAndCorrections(t *testing.T) {
 	tempSnapshotDir := createTempDir(t) // Use default path mechanism
 	t.Setenv("VAULT_ADDR", "http://localhost:8200")
 	t.Setenv("S3_BUCKET", "req-bucket")
-	t.Setenv("AWS_REGION", "us-east-1")
 	t.Setenv("VAULT_SECRET_PATH", "req/path")
 
 	// Specific values to test defaults/corrections
-	t.Setenv("RETENTION_PERIOD", "invalid-duration") // Keep invalid duration
-	t.Setenv("MEMORY_LIMIT_RATIO", "1.5")
-	t.Setenv("S3_CHECKSUM_ALGORITHM", "MD5")
+	t.Setenv("RETENTION_PERIOD", "24h") // Valid duration
+	t.Setenv("MEMORY_LIMIT_RATIO", "0.5") // Valid ratio
+	t.Setenv("S3_CHECKSUM_ALGORITHM", "SHA256") // Valid algorithm
 	t.Setenv("SECURE_DELETE", "INVALID_BOOL")
 	t.Setenv("LOG_LEVEL", "Trace")
-	t.Setenv("INVALID_FLOAT_VAR_FOR_TEST", "not-a-float")
-	t.Setenv("INVALID_INT_VAR_FOR_TEST", "not-an-int")
 
 	// Unset other optional vars to check their defaults
 	_ = os.Unsetenv("SNAPSHOT_PATH")
 	_ = os.Unsetenv("AWS_ENDPOINT")
 	_ = os.Unsetenv("VAULT_KUBERNETES_ROLE")
-	_ = os.Unsetenv("RETENTION_PERIOD")              // Unset to test default, override above doesn't make sense
-	t.Setenv("RETENTION_PERIOD", "invalid-duration") // Reset for test
 
 	// We need to temporarily set SNAPSHOT_PATH for the write check if not set
 	if os.Getenv("SNAPSHOT_PATH") == "" {
@@ -211,9 +205,9 @@ func TestLoadConfig_DefaultsAndCorrections(t *testing.T) {
 	require.NotNil(t, cfg)
 
 	// Check corrected values
-	assert.Equal(t, 7*24*time.Hour, cfg.RetentionPeriod, "RetentionPeriod should default to 7 days for invalid input")
-	assert.Equal(t, 0.85, cfg.MemoryLimitRatio, "MemoryLimitRatio should default to 0.85 for invalid input")
-	assert.Equal(t, "", cfg.S3ChecksumAlgorithm, "S3ChecksumAlgorithm should default to empty for invalid input")
+	assert.Equal(t, 24*time.Hour, cfg.RetentionPeriod, "RetentionPeriod should be set from env var")
+	assert.Equal(t, 0.5, cfg.MemoryLimitRatio, "MemoryLimitRatio should be set from env var")
+	assert.Equal(t, "SHA256", cfg.S3ChecksumAlgorithm, "S3ChecksumAlgorithm should be set from env var")
 	assert.False(t, cfg.SecureDelete, "SecureDelete should default to false for invalid input")
 	assert.Equal(t, "trace", cfg.LogLevel, "LogLevel should be lowercased")
 
@@ -221,12 +215,7 @@ func TestLoadConfig_DefaultsAndCorrections(t *testing.T) {
 	assert.Equal(t, tempSnapshotDir, cfg.SnapshotPath, "SnapshotPath should default if not set")
 	assert.Equal(t, "", cfg.AWSEndpoint)
 	assert.Equal(t, "", cfg.VaultKubernetesRole)
-
-	// Check that the underlying getEnvInt/Float helpers handled errors gracefully (by using defaults)
-	assert.Equal(t, 0.0, getEnvFloat("INVALID_FLOAT_VAR_FOR_TEST", 0.0))
-
-	// Cleanup extra vars set just for this test
-	_ = os.Unsetenv("INVALID_FLOAT_VAR_FOR_TEST")
+	assert.Equal(t, "auto", cfg.AWSRegion, "AWSRegion should default to 'auto'")
 }
 
 func TestCheckSnapshotPath(t *testing.T) {
@@ -288,42 +277,43 @@ func TestLoadConfig_AdditionalCases(t *testing.T) {
 		tempDir := createTempDir(t)
 		t.Setenv("VAULT_ADDR", "https://vault.test")
 		t.Setenv("S3_BUCKET", "test-bucket")
-		t.Setenv("AWS_REGION", "us-west-2")
 		t.Setenv("VAULT_SECRET_PATH", "kv/test")
 		t.Setenv("SNAPSHOT_PATH", tempDir)
 		t.Setenv("RETENTION_PERIOD", "-24h") // Negative retention period
 
 		cfg, err := LoadConfig()
-		require.NoError(t, err)
-		assert.Equal(t, 7*24*time.Hour, cfg.RetentionPeriod, "Should default to 7 days for negative retention period")
+		assert.Nil(t, cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid RETENTION_PERIOD: must be positive")
 	})
 
 	t.Run("InvalidMemoryLimitRatio", func(t *testing.T) {
 		tempDir := createTempDir(t)
 		t.Setenv("VAULT_ADDR", "https://vault.test")
 		t.Setenv("S3_BUCKET", "test-bucket")
-		t.Setenv("AWS_REGION", "us-west-2")
 		t.Setenv("VAULT_SECRET_PATH", "kv/test")
 		t.Setenv("SNAPSHOT_PATH", tempDir)
 		t.Setenv("MEMORY_LIMIT_RATIO", "-0.5") // Negative ratio
 
 		cfg, err := LoadConfig()
-		require.NoError(t, err)
-		assert.Equal(t, 0.85, cfg.MemoryLimitRatio, "Should default to 0.85 for negative ratio")
+		assert.Nil(t, cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid MEMORY_LIMIT_RATIO: must be between 0 and 1")
 	})
 
 	t.Run("InvalidS3ChecksumAlgorithm", func(t *testing.T) {
 		tempDir := createTempDir(t)
 		t.Setenv("VAULT_ADDR", "https://vault.test")
 		t.Setenv("S3_BUCKET", "test-bucket")
-		t.Setenv("AWS_REGION", "us-west-2")
 		t.Setenv("VAULT_SECRET_PATH", "kv/test")
 		t.Setenv("SNAPSHOT_PATH", tempDir)
 		t.Setenv("S3_CHECKSUM_ALGORITHM", "INVALID_ALGO")
 
 		cfg, err := LoadConfig()
-		require.NoError(t, err)
-		assert.Equal(t, "", cfg.S3ChecksumAlgorithm, "Should default to empty string for invalid algorithm")
+		assert.Nil(t, cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid S3_CHECKSUM_ALGORITHM")
+		assert.Contains(t, err.Error(), "valid values: SHA256, SHA1, CRC32, CRC32C")
 	})
 }
 
