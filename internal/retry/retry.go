@@ -21,8 +21,6 @@ type IsRetryableFunc func(err error) bool
 // OperationFunc defines the signature for the function to be executed and potentially retried.
 type OperationFunc func(ctx context.Context) error
 
-// ExecuteWithRetry attempts to execute the operation, retrying with exponential backoff
-// if the operation fails with a retryable error.
 func ExecuteWithRetry(ctx context.Context, cfg Config, operation OperationFunc, isRetryable IsRetryableFunc, operationName string) error {
 	if cfg.MaxAttempts <= 0 {
 		return errors.New("MaxAttempts must be greater than 0")

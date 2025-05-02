@@ -379,38 +379,6 @@ func TestClient_Login_K8sPermanentError(t *testing.T) {
 	mockAuth.AssertNotCalled(t, "Token") // Verify Token() was not called for K8s auth
 }
 
-/* // Temporarily commented out
-func TestClient_Login_K8sRetryExhausted(t *testing.T) {
-	// Use original context for setup
-	setupCtx, cfg, mockClient, mockAuth, _, _, _, teardown := setupTest(t)
-	defer teardown()
-
-	cfg.VaultKubernetesRole = "test-role"
-	_ = os.Unsetenv("VAULT_TOKEN") // Ignore error
-
-	transientErr := transientNetError{errors.New("network timeout")}
-	// Mock transient error for all attempts allowed by backoff (50ms MaxElapsedTime)
-	// Revert context matcher back to mock.Anything
-	mockAuth.On("Login", mock.Anything, mock.AnythingOfType("*kubernetes.KubernetesAuth")).Return(nil, transientErr)
-
-	client, err := NewClient(cfg, mockClient)
-	require.NoError(t, err)
-
-	// Call Login using the background context from setup.
-	// Rely on backoff's MaxElapsedTime (50ms) to terminate the retry loop.
-	err = client.Login(setupCtx)
-
-	// Assert that an error occurred and it contains the original transient error,
-	// indicating the backoff mechanism itself stopped the retries.
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "authentication/validation failed") // Outer error message
-	assert.ErrorIs(t, err, transientErr) // Check the underlying cause
-
-	mockAuth.AssertExpectations(t)
-	mockAuth.AssertNotCalled(t, "Token") // Verify Token() was not called for K8s auth
-}
-*/
-
 func TestClient_Login_NoAuthMethod(t *testing.T) {
 	ctx, cfg, mockClient, _, _, _, _, teardown := setupTest(t)
 	defer teardown()
@@ -1153,33 +1121,6 @@ func TestVaultCredentials_Zero_NilReceiver(t *testing.T) {
 	// Should not panic
 	assert.NotPanics(t, func() { creds.Zero() })
 }
-
-// Need helper functions to expose internal backoff setting for testing
-// Add these to vault.go or a new vault_test_helpers.go
-/*
-var defaultBackoffFunc = defaultBackoff // package var
-
-func GetDefaultBackoff() func() *backoff.ExponentialBackOff {
-	return defaultBackoffFunc
-}
-
-func SetDefaultBackoff(fn func() *backoff.ExponentialBackOff) {
-	defaultBackoffFunc = fn
-}
-
-// Also need to export helpers for testing
-func VerifyInternalChecksums(r io.ReadSeeker) (bool, error) {
-	return verifyInternalChecksums(r)
-}
-
-func ParseSHA256SUMS(content []byte) map[string]string {
-	return parseSHA256SUMS(content)
-}
-
-func CreateChecksumFile(filePath, checksumPath string) error {
-	return createChecksumFile(filePath, checksumPath)
-}
-*/
 
 func TestIsTransientVaultError(t *testing.T) {
 	tests := []struct {

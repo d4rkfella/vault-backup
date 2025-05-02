@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,7 +56,7 @@ func LoadConfig() (*Config, error) {
 		VaultAddr:                getEnv("VAULT_ADDR", ""),
 		S3Bucket:                 getEnv("S3_BUCKET", ""),
 		AWSEndpoint:              getEnv("AWS_ENDPOINT", ""),
-		AWSRegion:                getEnv("AWS_REGION", ""),
+		AWSRegion:                getEnv("AWS_REGION", "auto"),
 		VaultKubernetesRole:      getEnv("VAULT_KUBERNETES_ROLE", ""),
 		VaultKubernetesTokenPath: getEnv("VAULT_KUBERNETES_TOKEN_PATH", ""), // Default is empty, library uses /var/run/...
 		VaultSecretPath:          getEnv("VAULT_SECRET_PATH", ""),
@@ -72,31 +71,31 @@ func LoadConfig() (*Config, error) {
 		RetentionPeriod:          getEnvDuration("RETENTION_PERIOD", 7*24*time.Hour), // Default to 7 days
 	}
 
-	// Keep Final check for positive RetentionPeriod
-	if cfg.RetentionPeriod <= 0 {
-		log.Warn().Dur("retention_period", cfg.RetentionPeriod).Msg("RETENTION_PERIOD is not positive, defaulting to 7 days")
-		cfg.RetentionPeriod = 7 * 24 * time.Hour
-	}
-
 	// Validate specific field formats and values
 	if !strings.HasPrefix(cfg.VaultAddr, "http://") && !strings.HasPrefix(cfg.VaultAddr, "https://") {
-		return nil, errors.New("VAULT_ADDR must start with http:// or https://")
+		return nil, fmt.Errorf("invalid VAULT_ADDR format: must start with http:// or https://, got: %s", cfg.VaultAddr)
 	}
+
 	if cfg.MemoryLimitRatio <= 0 || cfg.MemoryLimitRatio > 1 {
-		log.Warn().Msg("MEMORY_LIMIT_RATIO must be between 0 and 1, defaulting to 0.85")
-		cfg.MemoryLimitRatio = 0.85
+		return nil, fmt.Errorf("invalid MEMORY_LIMIT_RATIO: must be between 0 and 1, got: %f", cfg.MemoryLimitRatio)
 	}
+
 	// Validate SnapshotPath is a writable directory
 	if err := checkSnapshotPath(cfg.SnapshotPath); err != nil {
-		return nil, err // Return error from checkSnapshotPath
+		return nil, fmt.Errorf("invalid SNAPSHOT_PATH: %w", err)
 	}
+
 	// Validate S3 checksum algorithm if provided
 	if cfg.S3ChecksumAlgorithm != "" {
 		validChecksums := map[string]bool{"SHA256": true, "SHA1": true, "CRC32": true, "CRC32C": true}
 		if _, ok := validChecksums[cfg.S3ChecksumAlgorithm]; !ok {
-			log.Warn().Str("algorithm", cfg.S3ChecksumAlgorithm).Msg("Invalid S3_CHECKSUM_ALGORITHM provided, ignoring")
-			cfg.S3ChecksumAlgorithm = "" // Reset to default if invalid
+			return nil, fmt.Errorf("invalid S3_CHECKSUM_ALGORITHM: %s (valid values: SHA256, SHA1, CRC32, CRC32C)", cfg.S3ChecksumAlgorithm)
 		}
+	}
+
+	// Validate retention period
+	if cfg.RetentionPeriod <= 0 {
+		return nil, fmt.Errorf("invalid RETENTION_PERIOD: must be positive, got: %v", cfg.RetentionPeriod)
 	}
 
 	log.Info().Str("component", "configuration").Msg("Configuration loaded")

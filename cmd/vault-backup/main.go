@@ -59,14 +59,15 @@ const (
 // main is the application entry point.
 // It sets up configuration, logging, signal handling, context, and invokes the core run function.
 func main() {
+	logging.Init("info")
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatal().Msg("Configuration loading failed")
+		log.Fatal().Err(err).Msg("Configuration loading failed")
 	}
 
-	// --- Setup Logging --- //
-	logging.Init(cfg.LogLevel) // Initialize logger using the new package
-	// --- End Logging Setup ---
+	// Re-initialize logger with configured level
+	logging.Init(cfg.LogLevel)
 
 	setupSystemResources(cfg)
 
