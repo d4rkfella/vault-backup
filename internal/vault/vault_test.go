@@ -1441,3 +1441,114 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+// TestClient_GetCredentials_KVv1Success tests successful credential retrieval from KV v1 secrets
+func TestClient_GetCredentials_KVv1Success(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	// Setup mock expectations
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Create a KV v1 secret response
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"aws_access_key_id":     "test-access-key",
+			"aws_secret_access_key": "test-secret-key",
+			"pushover_api_token":    "test-pushover-api",
+			"pushover_user_key":     "test-pushover-user",
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	// Create client and get credentials
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+
+	// Verify credentials
+	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
+	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
+	assert.Equal(t, "test-pushover-api", string(creds.PushoverAPI))
+	assert.Equal(t, "test-pushover-user", string(creds.PushoverUser))
+
+	// Cleanup
+	creds.Zero()
+}
+
+// TestClient_GetCredentials_KVv2Success tests successful credential retrieval from KV v2 secrets
+func TestClient_GetCredentials_KVv2Success(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	// Setup mock expectations
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Create a KV v2 secret response
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{
+				"aws_access_key_id":     "test-access-key",
+				"aws_secret_access_key": "test-secret-key",
+				"pushover_api_token":    "test-pushover-api",
+				"pushover_user_key":     "test-pushover-user",
+			},
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	// Create client and get credentials
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+
+	// Verify credentials
+	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
+	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
+	assert.Equal(t, "test-pushover-api", string(creds.PushoverAPI))
+	assert.Equal(t, "test-pushover-user", string(creds.PushoverUser))
+
+	// Cleanup
+	creds.Zero()
+}
+
+// TestClient_GetCredentials_KVv2InvalidData tests handling of invalid KV v2 data structure
+func TestClient_GetCredentials_KVv2InvalidData(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	// Setup mock expectations
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Create an invalid KV v2 secret response (data is not a map)
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"data": "not-a-map",
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	// Create client and get credentials
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	creds, err := client.GetCredentials(ctx)
+	require.Error(t, err)
+	require.Nil(t, creds)
+	assert.Contains(t, err.Error(), "invalid data structure in KV v2 secret")
+}

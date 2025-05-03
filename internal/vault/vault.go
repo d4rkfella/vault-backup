@@ -464,6 +464,20 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 		return nil, fmt.Errorf("no data found in secret at path: %s", util.SanitizePath(secretPath))
 	}
 
+	// Handle KV v2 secrets - check for data field
+	var secretData map[string]interface{}
+	if data, ok := secret.Data["data"]; ok {
+		// This is a KV v2 secret
+		if dataMap, ok := data.(map[string]interface{}); ok {
+			secretData = dataMap
+		} else {
+			return nil, fmt.Errorf("invalid data structure in KV v2 secret at path: %s", util.SanitizePath(secretPath))
+		}
+	} else {
+		// This is a KV v1 secret
+		secretData = secret.Data
+	}
+
 	// Extract data into SecureString fields
 	creds := &VaultCredentials{}
 	var ok bool
@@ -471,7 +485,7 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 
 	// Helper function to extract and zero string
 	extract := func(key string) (string, bool) {
-		val, exists := secret.Data[key]
+		val, exists := secretData[key]
 		if !exists {
 			return "", false
 		}
@@ -489,7 +503,7 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 	if awsAccess, ok = extract("aws_access_key_id"); ok {
 		creds.AWSAccess = NewSecureString([]byte(awsAccess))
 		defer zeroBytes([]byte(awsAccess)) // Zero intermediate string bytes
-	} else if _, exists := secret.Data["aws_access_key_id"]; exists && !ok { // Only error if key exists but type is wrong
+	} else if _, exists := secretData["aws_access_key_id"]; exists && !ok { // Only error if key exists but type is wrong
 		extractErr = errors.Join(extractErr, fmt.Errorf("invalid type for 'aws_access_key_id' in secret %s", util.SanitizePath(secretPath)))
 	} else { // Key doesn't exist
 		log.Warn().Str("path", util.SanitizePath(secretPath)).Msg("'aws_access_key_id' not found in secret")
@@ -498,7 +512,7 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 	if awsSecret, ok = extract("aws_secret_access_key"); ok {
 		creds.AWSSecret = NewSecureString([]byte(awsSecret))
 		defer zeroBytes([]byte(awsSecret))
-	} else if _, exists := secret.Data["aws_secret_access_key"]; exists && !ok {
+	} else if _, exists := secretData["aws_secret_access_key"]; exists && !ok {
 		extractErr = errors.Join(extractErr, fmt.Errorf("invalid type for 'aws_secret_access_key' in secret %s", util.SanitizePath(secretPath)))
 	} else {
 		log.Warn().Str("path", util.SanitizePath(secretPath)).Msg("'aws_secret_access_key' not found in secret")
@@ -507,7 +521,7 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 	if pushAPI, ok = extract("pushover_api_token"); ok {
 		creds.PushoverAPI = NewSecureString([]byte(pushAPI))
 		defer zeroBytes([]byte(pushAPI))
-	} else if _, exists := secret.Data["pushover_api_token"]; exists && !ok {
+	} else if _, exists := secretData["pushover_api_token"]; exists && !ok {
 		extractErr = errors.Join(extractErr, fmt.Errorf("invalid type for 'pushover_api_token' in secret %s", util.SanitizePath(secretPath)))
 	} else {
 		if c.config.PushoverEnable {
@@ -518,7 +532,7 @@ func (c *Client) GetCredentials(ctx context.Context) (*VaultCredentials, error) 
 	if pushUser, ok = extract("pushover_user_key"); ok {
 		creds.PushoverUser = NewSecureString([]byte(pushUser))
 		defer zeroBytes([]byte(pushUser))
-	} else if _, exists := secret.Data["pushover_user_key"]; exists && !ok {
+	} else if _, exists := secretData["pushover_user_key"]; exists && !ok {
 		extractErr = errors.Join(extractErr, fmt.Errorf("invalid type for 'pushover_user_key' in secret %s", util.SanitizePath(secretPath)))
 	} else {
 		if c.config.PushoverEnable {
