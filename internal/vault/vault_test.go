@@ -167,9 +167,9 @@ func setupTest(t *testing.T) (context.Context, *config.Config, *MockVaultAPIClie
 	cfg := &config.Config{
 		VaultAddr:                "http://localhost:8200",
 		VaultSecretPath:          "secret/data/app/creds",
-		SnapshotPath:             filepath.Join(tmpDir, "test_snapshot.snap.gz"),
+		SnapshotPath:             tmpDir,
 		LogLevel:                 "trace",
-		VaultKubernetesTokenPath: dummyTokenPath, // Set the path in config
+		VaultKubernetesTokenPath: dummyTokenPath,
 	}
 
 	// Initialize logging (use console writer for tests)
@@ -682,7 +682,11 @@ func TestClient_CreateSnapshot_Success(t *testing.T) {
 	snapshotPath, err := client.CreateSnapshot(ctx)
 
 	assert.NoError(t, err)
-	assert.Equal(t, cfg.SnapshotPath, snapshotPath)
+	// Assert that a path was returned and it's inside the configured directory
+	assert.NotEmpty(t, snapshotPath)
+	assert.True(t, strings.HasPrefix(snapshotPath, cfg.SnapshotPath), "Expected snapshot path %q to be inside %q", snapshotPath, cfg.SnapshotPath)
+	assert.True(t, strings.HasSuffix(snapshotPath, ".snap.gz"))
+
 	// Check final compressed file exists
 	_, err = os.Stat(snapshotPath)
 	assert.NoError(t, err, "Final snapshot file should exist")
@@ -726,7 +730,11 @@ func TestClient_CreateSnapshot_SuccessWithVerification(t *testing.T) {
 	snapshotPath, err := client.CreateSnapshot(ctx)
 
 	assert.NoError(t, err)
-	assert.Equal(t, cfg.SnapshotPath, snapshotPath)
+	// Assert that a path was returned and it's inside the configured directory
+	assert.NotEmpty(t, snapshotPath)
+	assert.True(t, strings.HasPrefix(snapshotPath, cfg.SnapshotPath), "Expected snapshot path %q to be inside %q", snapshotPath, cfg.SnapshotPath)
+	assert.True(t, strings.HasSuffix(snapshotPath, ".snap.gz"))
+
 	_, err = os.Stat(snapshotPath)
 	assert.NoError(t, err, "Final snapshot file should exist")
 	_, err = os.Stat(snapshotPath + ".sha256")
@@ -1212,32 +1220,6 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 	mockClient.On("Auth").Return(mockAuth)
 	mockAuth.On("Token").Return(mockToken)
 
-	t.Run("SnapshotPathError", func(t *testing.T) {
-		// --- Setup for this sub-test --- //
-		mockSys.ExpectedCalls = nil // Explicitly reset expectations
-		// Expect API call to succeed, error happens later
-		mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
-
-		// Create a directory where the snapshot file should be
-		err := os.MkdirAll(cfg.SnapshotPath, 0755)
-		require.NoError(t, err)
-		defer func() { _ = os.RemoveAll(cfg.SnapshotPath) }() // Ignore error
-
-		// Skip verification for this test to isolate the file opening error
-		cfg.SkipSnapshotVerify = true
-		defer func() { cfg.SkipSnapshotVerify = false }()
-		// --- End Setup --- //
-
-		client, err := NewClient(cfg, mockClient)
-		require.NoError(t, err)
-
-		_, err = client.CreateSnapshot(ctx)
-		assert.Error(t, err)
-		// Error occurs when trying to open finalPath for writing compression
-		assert.Contains(t, err.Error(), "failed to open final snapshot file")
-		assert.Contains(t, err.Error(), "is a directory") // Underlying OS error
-	})
-
 	t.Run("SnapshotWriteError", func(t *testing.T) {
 		// --- Setup for this sub-test --- //
 		mockSys.ExpectedCalls = nil // Explicitly reset expectations
@@ -1245,17 +1227,17 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 
 		// Create the target directory first, then make it read-only.
 		// This tests the failure of os.CreateTemp inside CreateSnapshot.
-		dir := filepath.Dir(cfg.SnapshotPath)
-		err := os.MkdirAll(dir, 0755) // Create with write perms first
+		// cfg.SnapshotPath is already a directory from setupTest
+		dir := cfg.SnapshotPath
+		// err := os.MkdirAll(dir, 0755) // Dir already exists from setupTest
+		// require.NoError(t, err)
+		err := os.Chmod(dir, 0444) // Make read-only
 		require.NoError(t, err)
-		err = os.Chmod(dir, 0444) // Make read-only
-		require.NoError(t, err)
-		defer func() { _ = os.Chmod(dir, 0755) }() // Ignore error
-		defer func() { _ = os.RemoveAll(dir) }()   // Ignore error
+		// Use t.Cleanup for robust cleanup
+		t.Cleanup(func() { _ = os.Chmod(dir, 0755) })
 
 		// Skip verification (though it won't be reached)
 		cfg.SkipSnapshotVerify = true
-		defer func() { cfg.SkipSnapshotVerify = false }()
 		// --- End Setup --- //
 
 		client, err := NewClient(cfg, mockClient)
@@ -1274,15 +1256,13 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		// Expect API call to fail
 		mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(errors.New("API error")).Once()
 
-		// Create a writable directory
-		dir := filepath.Dir(cfg.SnapshotPath)
-		err := os.MkdirAll(dir, 0755)
+		// Ensure directory is writable (should be by default from setupTest)
+		dir := cfg.SnapshotPath
+		err := os.Chmod(dir, 0755)
 		require.NoError(t, err)
-		defer func() { _ = os.RemoveAll(dir) }() // Ignore error
 
 		// Skip verification (won't be reached)
 		cfg.SkipSnapshotVerify = true
-		defer func() { cfg.SkipSnapshotVerify = false }()
 		// --- End Setup --- //
 
 		client, err := NewClient(cfg, mockClient)
@@ -1299,11 +1279,8 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		// Expect successful snapshot creation API call
 		mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
 
-		// Create a writable directory for snapshot
-		dir := filepath.Dir(cfg.SnapshotPath)
-		err := os.MkdirAll(dir, 0755)
-		require.NoError(t, err)
-		defer func() { _ = os.RemoveAll(dir) }() // Ignore error // Keep this one, RemoveAll is less likely to fail here
+		// Directory exists from setupTest
+		dir := cfg.SnapshotPath
 
 		// Create valid snapshot data
 		files := map[string][]byte{
@@ -1314,21 +1291,24 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		}
 		snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
 
-		// Create the directory where the checksum file will be attempted.
-		checksumDir := filepath.Dir(cfg.SnapshotPath + ".sha256")
-		err = os.MkdirAll(checksumDir, 0755)
-		require.NoError(t, err)
-		defer func() { _ = os.RemoveAll(checksumDir) }() // Ignore error
+		// Determine the expected final path to force the checksum error
+		// Note: We don't know the exact timestamp, so we create a collision
+		// by creating a directory where the checksum file *would* go.
+		// This requires predicting the filename format.
+		// THIS IS FRAGILE. A better approach might mock the createChecksumFile helper.
+		// For now, we'll attempt the collision.
+		now := time.Now()
+		filename := fmt.Sprintf("vault-snapshot-%s.snap.gz", now.Format("20060102-150405"))
+		expectedFinalPath := filepath.Join(dir, filename)
+		checksumFilePath := expectedFinalPath + ".sha256"
 
 		// *** Force OverwriteFile failure by creating a DIRECTORY at the checksum file path ***
-		checksumFilePath := cfg.SnapshotPath + ".sha256"
-		err = os.Mkdir(checksumFilePath, 0755)
+		err := os.Mkdir(checksumFilePath, 0755)
 		require.NoError(t, err)
-		// No need for defer remove on checksumFilePath, as RemoveAll(checksumDir) handles it.
+		t.Cleanup(func() { os.RemoveAll(checksumFilePath) })
 
 		// Enable verification (though it might not matter here)
 		cfg.SkipSnapshotVerify = false
-		defer func() { cfg.SkipSnapshotVerify = false }()
 		// --- End Setup --- //
 
 		client, err := NewClient(cfg, mockClient)
@@ -1338,7 +1318,7 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		assert.Error(t, err) // Check an error occurred
 		require.NotNil(t, err)
 		// Error occurs when trying to write the checksum file via util.OverwriteFile
-		assert.Contains(t, err.Error(), "failed to write checksum file")
+		assert.Contains(t, err.Error(), "failed to create checksum file")
 		// Check the underlying OS error (should be 'is a directory')
 		assert.Contains(t, err.Error(), "is a directory")
 	})
@@ -1349,11 +1329,10 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 		// Expect successful snapshot creation
 		mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
 
-		// Create a writable directory
-		dir := filepath.Dir(cfg.SnapshotPath)
-		err := os.MkdirAll(dir, 0755)
+		// Ensure directory is writable
+		dir := cfg.SnapshotPath
+		err := os.Chmod(dir, 0755)
 		require.NoError(t, err)
-		defer func() { _ = os.RemoveAll(dir) }() // Ignore error
 
 		// Create valid snapshot data
 		files := map[string][]byte{
@@ -1366,7 +1345,6 @@ func TestClient_CreateSnapshot_AdditionalCases(t *testing.T) {
 
 		// Enable skip verification
 		cfg.SkipSnapshotVerify = true
-		defer func() { cfg.SkipSnapshotVerify = false }()
 		// --- End Setup --- //
 
 		client, err := NewClient(cfg, mockClient)
@@ -1643,8 +1621,15 @@ func TestClient_CreateSnapshot_CompressError(t *testing.T) {
 	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
 	defer teardown()
 
+	// Login (Needed because the test uses mockAuth/mockToken in setup)
+	_ = os.Setenv("VAULT_TOKEN", "test-token")
+	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }()
+	mockClient.On("SetToken", "test-token").Return().Once()
+	mockAuth.On("Token").Return(mockToken).Once()
+	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
+
 	mockClient.On("Sys").Return(mockSys)
-	mockAuth.On("Token").Return(mockToken)
+	// mockAuth.On("Token").Return(mockToken) // Already set up for Login
 
 	// Create valid snapshot data that will be used for compression
 	files := map[string][]byte{
@@ -1658,24 +1643,30 @@ func TestClient_CreateSnapshot_CompressError(t *testing.T) {
 	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
 
 	// Create the snapshot directory with write permissions
-	dir := filepath.Dir(cfg.SnapshotPath)
-	err := os.MkdirAll(dir, 0755)
+	dir := cfg.SnapshotPath // Directory path from setupTest
+	err := os.Chmod(dir, 0755) // Ensure it's writable
 	require.NoError(t, err)
-	defer func() {
-		_ = os.Chmod(dir, 0755)
-		_ = os.RemoveAll(dir)
-	}()
 
-	// Create a file at the snapshot path to cause the compression to fail
-	err = os.MkdirAll(cfg.SnapshotPath, 0755) // Create a directory instead of a file
+	// Create a directory where the final snapshot file *would* be generated
+	// This causes the os.OpenFile call within CreateSnapshot to fail when compressing
+	now := time.Now()
+	filename := fmt.Sprintf("vault-snapshot-%s.snap.gz", now.Format("20060102-150405"))
+	expectedFinalPath := filepath.Join(dir, filename)
+	err = os.MkdirAll(expectedFinalPath, 0755) // Create a directory instead of a file
 	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(expectedFinalPath) })
 
 	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+	// Perform the login
+	err = client.Login(ctx)
 	require.NoError(t, err)
 
 	_, err = client.CreateSnapshot(ctx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to open final snapshot file")
+	// Check for underlying OS error 'is a directory'
+	assert.ErrorContains(t, err, "is a directory")
 }
 
 // TestClient_GetCredentials_NilSecret tests handling of nil secret response
@@ -1922,21 +1913,29 @@ func TestClient_CreateSnapshot_EmptySnapshot(t *testing.T) {
 
 // TestClient_CreateSnapshot_InvalidPath tests handling of invalid snapshot paths
 func TestClient_CreateSnapshot_InvalidPath(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, _, _, teardown := setupTest(t)
 	defer teardown()
 
-	// Set an invalid path (directory instead of file)
-	cfg.SnapshotPath = "/tmp/"
+	// Create a temporary *file* to use as an invalid path
+	tmpFile, err := os.CreateTemp(t.TempDir(), "i_am_a_file_not_a_dir")
+	require.NoError(t, err)
+	tmpFilePath := tmpFile.Name()
+	tmpFile.Close() // Close the file handle
+	t.Cleanup(func() { os.Remove(tmpFilePath) }) // Clean up the temp file
 
-	mockClient.On("Sys").Return(mockSys)
-	mockAuth.On("Token").Return(mockToken)
+	// Set SnapshotPath to the existing file, which is invalid (must be a directory)
+	cfg.SnapshotPath = tmpFilePath
+
+	// No Sys/Auth/Token mocks needed here, as the error should occur before API calls
 
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
 
+	// CreateSnapshot should fail early because the path is a file, not a directory
 	_, err = client.CreateSnapshot(ctx)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "must be a full file path")
+	assert.Contains(t, err.Error(), "snapshot path")
+	assert.Contains(t, err.Error(), "is not a directory") // Verify the specific error message
 }
 
 // TestClient_CreateSnapshot_ContextTimeout tests handling of context timeout
@@ -1972,6 +1971,12 @@ func TestClient_CreateSnapshot_RetrySuccess(t *testing.T) {
 	mockClient.On("Sys").Return(mockSys)
 	mockAuth.On("Token").Return(mockToken)
 
+	// Login (needed because mockAuth/mockToken are used)
+	_ = os.Setenv("VAULT_TOKEN", "test-token")
+	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }()
+	mockClient.On("SetToken", "test-token").Return().Once()
+	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
+
 	// Create valid snapshot data
 	files := map[string][]byte{
 		"state/raft.db": []byte("test data"),
@@ -1988,11 +1993,21 @@ func TestClient_CreateSnapshot_RetrySuccess(t *testing.T) {
 
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
+	err = client.Login(ctx) // Perform login
+	require.NoError(t, err)
 
 	cfg.SkipSnapshotVerify = true // Skip verification for this test
 	snapshotPath, err := client.CreateSnapshot(ctx)
 	assert.NoError(t, err)
-	assert.Equal(t, cfg.SnapshotPath, snapshotPath)
+
+	// Assert that a path was returned and it's inside the configured directory
+	assert.NotEmpty(t, snapshotPath)
+	assert.True(t, strings.HasPrefix(snapshotPath, cfg.SnapshotPath), "Expected snapshot path %q to be inside %q", snapshotPath, cfg.SnapshotPath)
+	assert.True(t, strings.HasSuffix(snapshotPath, ".snap.gz"))
+
+	// Optional: Check file existence if needed
+	_, err = os.Stat(snapshotPath)
+	assert.NoError(t, err, "Final snapshot file should exist after retry")
 }
 
 // TestClient_CreateSnapshot_RetryExhausted tests handling of exhausted retries

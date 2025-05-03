@@ -564,21 +564,35 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 	}
 	cfg := c.config // Use stored config
 
-	// --- 1. Create Temporary File for Raw Snapshot --- //
-	// Use the directory of the final snapshot path for the temporary file.
-	// Ensure SnapshotPath is a file path, not just a directory.
-	if filepath.Ext(cfg.SnapshotPath) == "" {
-		return "", fmt.Errorf("SnapshotPath %q must be a full file path (e.g., /path/to/snapshot.snap.gz), not a directory", util.SanitizePath(cfg.SnapshotPath))
+	// --- 1. Validate Snapshot Directory and Generate Filename --- //
+	sanitizedDir := util.SanitizePath(cfg.SnapshotPath)
+	pathInfo, pathErr := os.Stat(cfg.SnapshotPath)
+
+	if pathErr != nil {
+		if errors.Is(pathErr, os.ErrNotExist) {
+			return "", fmt.Errorf("snapshot directory %q does not exist", sanitizedDir)
+		} else {
+			return "", fmt.Errorf("failed to stat snapshot directory %q: %w", sanitizedDir, pathErr)
+		}
 	}
-	tmpDir := filepath.Dir(cfg.SnapshotPath)
-	if err := os.MkdirAll(tmpDir, 0700); err != nil {
-		// Use sanitized path in error message
-		return "", fmt.Errorf("failed to create directory %q for snapshot: %w", util.SanitizePath(tmpDir), err)
+	if !pathInfo.IsDir() {
+		return "", fmt.Errorf("snapshot path %q is not a directory", sanitizedDir)
 	}
 
+	// SnapshotPath is an existing directory, generate filename
+	log.Debug().Str("path", sanitizedDir).Msg("Snapshot path is a directory, generating filename")
+	now := time.Now()
+	filename := fmt.Sprintf("vault-snapshot-%s.snap.gz", now.Format("20060102-150405"))
+	finalPath := filepath.Join(cfg.SnapshotPath, filename)
+	sanitizedFinalPath := util.SanitizePath(finalPath)
+	log.Info().Str("path", sanitizedFinalPath).Msg("Determined final snapshot path")
+
+	// --- 2. Create Temporary File --- //
+	// Use the configured SnapshotPath (which is now verified to be a directory) for the temporary file.
+	tmpDir := cfg.SnapshotPath
 	tmpSnapFile, err := os.CreateTemp(tmpDir, "vault-snapshot-*.snap.tmp")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary snapshot file in %q: %w", util.SanitizePath(tmpDir), err)
+		return "", fmt.Errorf("failed to create temporary snapshot file in %q: %w", sanitizedDir, err)
 	}
 	tmpSnapFilename := tmpSnapFile.Name()
 	sanitizedTmpPath := util.SanitizePath(tmpSnapFilename)
@@ -598,7 +612,7 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 		}
 	}()
 
-	// --- 2. Perform Raft Snapshot (with Retries) --- //
+	// --- 3. Perform Raft Snapshot (with Retries) --- //
 	startTime := time.Now()
 	var snapshotErr error // Variable to store the final error
 
@@ -662,7 +676,7 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 		// No need to return here, the file might still be usable. Verification/compression will fail if not.
 	}
 
-	// --- 3. Verify Internal Checksums (Optional) --- //
+	// --- 4. Verify Internal Checksums (Optional) --- //
 	if !cfg.SkipSnapshotVerify {
 		log.Info().Str("component", "vault").Str("path", sanitizedTmpPath).Msg("Verifying internal snapshot checksums")
 
@@ -691,9 +705,9 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 		log.Warn().Str("component", "vault").Msg("Skipping internal snapshot checksum verification")
 	}
 
-	// --- 4. Compress Snapshot --- //
-	finalPath := cfg.SnapshotPath // This is the full path to the final compressed file
-	sanitizedFinalPath := util.SanitizePath(finalPath)
+	// --- 5. Compress Snapshot --- //
+	// finalPath is now determined above based on cfg.SnapshotPath
+	// sanitizedFinalPath is already set above
 	log.Info().Str("component", "vault").Str("source", sanitizedTmpPath).Str("destination", sanitizedFinalPath).Msg("Compressing snapshot")
 
 	// Open final destination file for writing (use secure permissions)
@@ -760,7 +774,7 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 
 	log.Info().Int64("bytes_written_compressed", bytesCopied).Str("path", sanitizedFinalPath).Msg("Snapshot compressed successfully")
 
-	// --- 5. Create Checksum File --- //
+	// --- 6. Create Checksum File --- //
 	checksumPath := finalPath + ".sha256"
 	sanitizedChecksumPath := util.SanitizePath(checksumPath)
 	log.Info().Str("component", "vault").Str("snapshot", sanitizedFinalPath).Str("checksum", sanitizedChecksumPath).Msg("Creating checksum file")
