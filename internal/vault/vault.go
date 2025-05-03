@@ -579,214 +579,64 @@ func (c *Client) CreateSnapshot(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("snapshot path %q is not a directory", sanitizedDir)
 	}
 
-	// SnapshotPath is an existing directory, generate filename
-	log.Debug().Str("path", sanitizedDir).Msg("Snapshot path is a directory, generating filename")
+	// Generate filename
 	now := time.Now()
-	filename := fmt.Sprintf("vault-snapshot-%s.snap.gz", now.Format("20060102-150405"))
+	filename := fmt.Sprintf("vault-snapshot-%s.snap", now.Format("20060102-150405"))
 	finalPath := filepath.Join(cfg.SnapshotPath, filename)
 	sanitizedFinalPath := util.SanitizePath(finalPath)
-	log.Info().Str("path", sanitizedFinalPath).Msg("Determined final snapshot path")
+	log.Info().Str("path", sanitizedFinalPath).Msg("Creating snapshot")
 
-	// --- 2. Create Temporary File --- //
-	// Use the configured SnapshotPath (which is now verified to be a directory) for the temporary file.
-	tmpDir := cfg.SnapshotPath
-	tmpSnapFile, err := os.CreateTemp(tmpDir, "vault-snapshot-*.snap.tmp")
+	// Create the snapshot file
+	file, err := os.Create(finalPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary snapshot file in %q: %w", sanitizedDir, err)
+		return "", fmt.Errorf("failed to create snapshot file %q: %w", sanitizedFinalPath, err)
 	}
-	tmpSnapFilename := tmpSnapFile.Name()
-	sanitizedTmpPath := util.SanitizePath(tmpSnapFilename)
-	log.Debug().Str("path", sanitizedTmpPath).Msg("Created temporary file for raw snapshot")
+	defer file.Close()
 
-	// Defer cleanup of the temporary raw snapshot file
-	defer func() {
-		log.Debug().Str("path", sanitizedTmpPath).Msg("Attempting to remove temporary snapshot file")
-		if err := tmpSnapFile.Close(); err != nil {
-			// Log error, but removal is more important
-			log.Warn().Err(err).Str("path", sanitizedTmpPath).Msg("Failed to close temporary snapshot file during cleanup (will still attempt removal)")
-		}
-		if removeErr := os.Remove(tmpSnapFilename); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Error().Err(removeErr).Str("path", sanitizedTmpPath).Msg("Failed to remove temporary snapshot file")
-		} else if removeErr == nil {
-			log.Debug().Str("path", sanitizedTmpPath).Msg("Successfully removed temporary snapshot file")
-		}
-	}()
-
-	// --- 3. Perform Raft Snapshot (with Retries) --- //
-	startTime := time.Now()
-	var snapshotErr error // Variable to store the final error
-
-	snapshotOperation := func(opCtx context.Context) error {
-		// Ensure file is ready for writing (seek/truncate needed if retrying)
-		if _, err := tmpSnapFile.Seek(0, io.SeekStart); err != nil {
-			// Treat seek/truncate errors as permanent for this operation
-			return fmt.Errorf("failed to seek temporary snapshot file %q: %w", sanitizedTmpPath, err) // isTransientVaultError will be false
-		}
-		if err := tmpSnapFile.Truncate(0); err != nil {
-			return fmt.Errorf("failed to truncate temporary snapshot file %q: %w", sanitizedTmpPath, err) // isTransientVaultError will be false
+	// Take the snapshot with retries
+	var snapshotErr error
+	for retries := 0; retries < 3; retries++ {
+		if retries > 0 {
+			log.Info().Int("retry", retries).Msg("Retrying snapshot creation")
+			time.Sleep(time.Second * time.Duration(retries))
 		}
 
-		log.Trace().Str("component", "vault").Msg("Attempting to get Vault Raft snapshot") // Changed to Trace for less noise on retries
-		innerErr := c.client.Sys().RaftSnapshotWithContext(opCtx, tmpSnapFile)             // Use opCtx
-
-		if innerErr != nil {
-			// Sync before checking error type, might give more context
-			_ = tmpSnapFile.Sync()
-			// Return the error to be checked by isTransientVaultError
-			return innerErr
+		if err := c.client.Sys().RaftSnapshotWithContext(ctx, file); err != nil {
+			snapshotErr = err
+			if !isTransientVaultError(err) {
+				_ = os.Remove(finalPath)
+				return "", fmt.Errorf("failed to create Vault snapshot: %w", err)
+			}
+			continue
 		}
-
-		// Sync after successful write before returning success
-		if err := tmpSnapFile.Sync(); err != nil {
-			log.Warn().Err(err).Str("path", sanitizedTmpPath).Msg("Failed to sync temporary snapshot file after write")
-			// Treat sync error as permanent for this operation
-			return fmt.Errorf("failed to sync snapshot file %q: %w", sanitizedTmpPath, err) // isTransientVaultError will be false
-		}
-		snapshotErr = nil // Explicitly nil error on success
-		return nil        // Success
+		snapshotErr = nil
+		break
 	}
 
-	// Execute the operation with retry
-	snapshotErr = retry.ExecuteWithRetry(ctx, defaultRetryConfig, snapshotOperation, isTransientVaultError, "VaultRaftSnapshot")
-
-	// Check final error after retries
 	if snapshotErr != nil {
-		log.Error().Err(snapshotErr).Msg("Vault Raft snapshot failed after retries")
-		// Cleanup (defer will handle it) and return error
-		return "", fmt.Errorf("failed to get Vault raft snapshot: %w", snapshotErr)
-	}
-	// --- End Retry Block --- //
-
-	duration := time.Since(startTime)
-	fileInfo, statErr := tmpSnapFile.Stat()
-	if statErr != nil {
-		// Should not happen if write succeeded, but check anyway
-		return "", fmt.Errorf("failed to stat temporary snapshot file %q after write: %w", sanitizedTmpPath, statErr)
-	}
-	log.Info().
-		Str("component", "vault").
-		Str("path", sanitizedTmpPath).
-		Int64("size_bytes", fileInfo.Size()).
-		Dur("duration", duration).Msg("Raw Vault snapshot saved to temporary file")
-
-	// Close the file descriptor for the temp file now, as we'll reopen it if needed.
-	if err := tmpSnapFile.Close(); err != nil {
-		// Log error, but proceed to verification/compression if possible
-		log.Error().Err(err).Str("path", sanitizedTmpPath).Msg("Failed to close temporary snapshot file after writing (proceeding cautiously)")
-		// No need to return here, the file might still be usable. Verification/compression will fail if not.
+		_ = os.Remove(finalPath)
+		return "", fmt.Errorf("failed to create Vault snapshot: %w", snapshotErr)
 	}
 
-	// --- 4. Verify Internal Checksums (Optional) --- //
+	// Verify internal checksums
 	if !cfg.SkipSnapshotVerify {
-		log.Info().Str("component", "vault").Str("path", sanitizedTmpPath).Msg("Verifying internal snapshot checksums")
-
-		// Re-open the temporary file for reading
-		verifyFile, err := os.Open(tmpSnapFilename)
-		if err != nil {
-			return "", fmt.Errorf("failed to re-open temporary snapshot file %q for verification: %w", sanitizedTmpPath, err)
-		}
-
-		verified, verifyErr := verifyInternalChecksums(verifyFile) // Pass the open file handle
-		closeErr := verifyFile.Close()                             // Close immediately after verification
-
+		log.Info().Str("component", "vault").Str("path", sanitizedFinalPath).Msg("Verifying internal snapshot checksums")
+		verified, verifyErr := verifyInternalChecksums(finalPath)
 		if verifyErr != nil {
-			// Treat verification error as critical, don't proceed with potentially corrupt backup
-			return "", fmt.Errorf("error verifying internal snapshot checksums for %s: %w", sanitizedTmpPath, verifyErr)
+			_ = os.Remove(finalPath)
+			return "", fmt.Errorf("error verifying internal snapshot checksums for %s: %w", sanitizedFinalPath, verifyErr)
 		}
 		if !verified {
-			return "", fmt.Errorf("internal snapshot checksum verification failed for %s", sanitizedTmpPath)
+			_ = os.Remove(finalPath)
+			return "", fmt.Errorf("internal snapshot checksum verification failed for %s", sanitizedFinalPath)
 		}
-		if closeErr != nil {
-			// Log error, but verification passed, so proceed
-			log.Warn().Err(closeErr).Str("path", sanitizedTmpPath).Msg("Failed to close temporary snapshot file after verification")
-		}
-		log.Info().Str("component", "vault").Str("path", sanitizedTmpPath).Msg("Internal snapshot checksums verified successfully")
+		log.Info().Str("component", "vault").Str("path", sanitizedFinalPath).Msg("Internal snapshot checksums verified successfully")
 	} else {
 		log.Warn().Str("component", "vault").Msg("Skipping internal snapshot checksum verification")
 	}
 
-	// --- 5. Compress Snapshot --- //
-	// finalPath is now determined above based on cfg.SnapshotPath
-	// sanitizedFinalPath is already set above
-	log.Info().Str("component", "vault").Str("source", sanitizedTmpPath).Str("destination", sanitizedFinalPath).Msg("Compressing snapshot")
-
-	// Open final destination file for writing (use secure permissions)
-	outFile, err := os.OpenFile(finalPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return "", fmt.Errorf("failed to open final snapshot file %q for writing: %w", sanitizedFinalPath, err)
-	}
-	var closeOutFileErr error
-	defer func() {
-		if err := outFile.Close(); err != nil {
-			closeOutFileErr = err
-			log.Error().Err(err).Str("path", sanitizedFinalPath).Msg("Failed to close final snapshot file")
-		}
-	}()
-
-	gzipWriter := gzip.NewWriter(outFile)
-	var closeGzipErr error
-	defer func() {
-		if err := gzipWriter.Close(); err != nil {
-			closeGzipErr = err
-			log.Error().Err(err).Str("path", sanitizedFinalPath).Msg("Failed to close gzip writer")
-			// Consider deleting the potentially corrupt outFile here if gzip close fails?
-			_ = os.Remove(finalPath)
-		}
-	}()
-
-	// Re-open the temporary file for reading again
-	inputFile, err := os.Open(tmpSnapFilename)
-	if err != nil {
-		return "", fmt.Errorf("failed to re-open temporary snapshot file %q for compression: %w", sanitizedTmpPath, err)
-	}
-	defer func() { _ = inputFile.Close() }() // Ignore error
-
-	bytesCopied, err := io.Copy(gzipWriter, inputFile)
-	if err != nil {
-		// Attempt to remove the potentially incomplete/corrupt final file
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("failed to compress snapshot from %s to %s: %w", sanitizedTmpPath, sanitizedFinalPath, err)
-	}
-
-	// Explicitly close gzipWriter and outFile *before* checksumming
-	// Capture errors from the deferred calls
-	if err := gzipWriter.Close(); err != nil {
-		closeGzipErr = err
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("failed to close gzip writer for %s: %w", sanitizedFinalPath, err)
-	}
-	if err := outFile.Close(); err != nil {
-		closeOutFileErr = err
-		// File might still be valid even if close failed, proceed to checksum? Or return error?
-		// Let's return error for now, as a close error is suspicious.
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("failed to close final snapshot file %s after writing: %w", sanitizedFinalPath, err)
-	}
-	// Check errors captured by defer (should be nil if explicit closes succeeded)
-	if closeGzipErr != nil {
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("deferred gzip writer close failed for %s: %w", sanitizedFinalPath, closeGzipErr)
-	}
-	if closeOutFileErr != nil {
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("deferred final file close failed for %s: %w", sanitizedFinalPath, closeOutFileErr)
-	}
-
-	log.Info().Int64("bytes_written_compressed", bytesCopied).Str("path", sanitizedFinalPath).Msg("Snapshot compressed successfully")
-
-	// --- 6. Create Checksum File --- //
-	checksumPath := finalPath + ".sha256"
-	sanitizedChecksumPath := util.SanitizePath(checksumPath)
-	log.Info().Str("component", "vault").Str("snapshot", sanitizedFinalPath).Str("checksum", sanitizedChecksumPath).Msg("Creating checksum file")
-	if err := createChecksumFile(finalPath, checksumPath); err != nil {
-		// Attempt to remove the snapshot file as well, as it exists without a valid checksum
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("failed to create checksum file %s: %w", sanitizedChecksumPath, err)
-	}
-
-	// Cleanup of temp file is handled by defer
 	log.Info().Str("component", "vault").Str("path", sanitizedFinalPath).Msg("Snapshot creation complete")
-	return finalPath, nil // Return the path to the compressed snapshot
+	return finalPath, nil
 }
 
 // Close revokes the Vault token if it's still valid.
@@ -825,17 +675,30 @@ func (c *Client) Close(ctx context.Context) {
 
 // --- Helper Functions ---
 
-// verifyInternalChecksums reads a Vault snapshot (tar format) and verifies the checksums inside.
-// Expects an open file handle ready for reading at the beginning of the file.
-func verifyInternalChecksums(snapshotFile io.ReadSeeker) (bool, error) {
-	// Important: Ensure the file pointer is at the beginning before reading
-	if _, err := snapshotFile.Seek(0, io.SeekStart); err != nil {
-		return false, fmt.Errorf("failed to seek snapshot file: %w", err)
+// verifyInternalChecksums reads a Vault snapshot (tar.gz format) and verifies the checksums inside.
+// Expects the full path to the gzipped snapshot file.
+func verifyInternalChecksums(snapshotGzipPath string) (bool, error) {
+	// Open the gzipped snapshot file
+	sanitizedPath := util.SanitizePath(snapshotGzipPath)
+	file, err := os.Open(snapshotGzipPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to open snapshot file %q: %w", sanitizedPath, err)
 	}
+	defer file.Close()
 
-	tarReader := tar.NewReader(snapshotFile) // Works with io.Reader
+	// Create a gzip reader
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		// If it's not even valid gzip, it can't contain the expected tar archive
+		return false, fmt.Errorf("failed to create gzip reader for %q: %w", sanitizedPath, err)
+	}
+	defer gzReader.Close()
+
+	// Create a tar reader on top of the gzip reader
+	tarReader := tar.NewReader(gzReader)
 	filesData := make(map[string][]byte)
 	var checksumsContent []byte
+	foundChecksumFile := false
 
 	log.Debug().Msg("Extracting snapshot contents for verification")
 	for {
@@ -844,17 +707,24 @@ func verifyInternalChecksums(snapshotFile io.ReadSeeker) (bool, error) {
 			break // End of archive
 		}
 		if err != nil {
-			return false, fmt.Errorf("failed to read tar header: %w", err)
+			// Check for common tar errors like unexpected EOF which might occur with malformed archives
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return false, fmt.Errorf("failed to read tar header (unexpected EOF) from %q: %w", sanitizedPath, err)
+			}
+			return false, fmt.Errorf("failed to read tar header from %q: %w", sanitizedPath, err)
 		}
 
 		if header.Typeflag == tar.TypeReg { // Regular file
+			// Limit the amount read per file to prevent memory exhaustion from large unexpected files
+			limitedReader := io.LimitedReader{R: tarReader, N: 1024 * 1024 * 100} // 100MB limit per file inside tar
 			var buf bytes.Buffer
-			if _, err := io.Copy(&buf, tarReader); err != nil {
-				return false, fmt.Errorf("failed to read file from tar (%s): %w", header.Name, err)
+			if _, err := io.Copy(&buf, &limitedReader); err != nil {
+				return false, fmt.Errorf("failed to read file content from tar (%s) in %q: %w", header.Name, sanitizedPath, err)
 			}
 			fileData := buf.Bytes()
 			if header.Name == "SHA256SUMS" {
 				checksumsContent = fileData
+				foundChecksumFile = true
 			} else {
 				// Store file data, ensuring path separators are consistent (using '/')
 				cleanName := filepath.ToSlash(header.Name)
@@ -864,21 +734,20 @@ func verifyInternalChecksums(snapshotFile io.ReadSeeker) (bool, error) {
 		}
 	}
 
-	if checksumsContent == nil {
-		return false, fmt.Errorf("SHA256SUMS file not found in the snapshot archive")
+	if !foundChecksumFile {
+		return false, fmt.Errorf("SHA256SUMS file not found in the snapshot archive %q", sanitizedPath)
 	}
 
 	expectedChecksums := parseSHA256SUMS(checksumsContent)
 	if len(expectedChecksums) == 0 {
-		return false, errors.New("failed to parse SHA256SUMS or it was empty")
+		return false, fmt.Errorf("failed to parse SHA256SUMS or it was empty in %q", sanitizedPath)
 	}
 
 	log.Debug().Int("count", len(expectedChecksums)).Msg("Parsed expected checksums")
 
 	if len(filesData) != len(expectedChecksums) {
 		log.Warn().Int("files", len(filesData)).Int("checksums", len(expectedChecksums)).Msg("Mismatch between number of files and checksum entries")
-		// Depending on strictness, might return false here. Vault might include extra files not in SHA256SUMS?
-		// Let's proceed and check the ones listed.
+		// Allow this for now, just verify the files listed in SHA256SUMS
 	}
 
 	for filePath, expectedSum := range expectedChecksums {
@@ -886,7 +755,7 @@ func verifyInternalChecksums(snapshotFile io.ReadSeeker) (bool, error) {
 		data, ok := filesData[filePath]
 		if !ok {
 			log.Error().Str("file", filePath).Msg("File listed in SHA256SUMS not found in archive")
-			return false, fmt.Errorf("file %s listed in SHA256SUMS not found in archive", filePath)
+			return false, fmt.Errorf("file %s listed in SHA256SUMS not found in archive %q", filePath, sanitizedPath)
 		}
 
 		actualSumBytes := sha256.Sum256(data)
@@ -894,7 +763,7 @@ func verifyInternalChecksums(snapshotFile io.ReadSeeker) (bool, error) {
 
 		if actualSum != expectedSum {
 			log.Error().Str("file", filePath).Str("expected", expectedSum).Str("actual", actualSum).Msg("Checksum mismatch")
-			return false, fmt.Errorf("checksum mismatch for file %s", filePath)
+			return false, fmt.Errorf("checksum mismatch for file %s in %q", filePath, sanitizedPath)
 		}
 		log.Trace().Str("file", filePath).Msg("Checksum verified")
 	}
@@ -929,34 +798,3 @@ func parseSHA256SUMS(content []byte) map[string]string {
 	return checksums
 }
 
-// createChecksumFile calculates the SHA256 checksum of a file and writes it to a new file
-// in the format expected by sha256sum.
-func createChecksumFile(filePath, checksumPath string) error {
-	sanitizedFilePath := util.SanitizePath(filePath)
-	sanitizedChecksumPath := util.SanitizePath(checksumPath)
-	log.Debug().Str("source", sanitizedFilePath).Str("dest", sanitizedChecksumPath).Msg("Calculating SHA256 checksum")
-	file, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to open file %q for checksum calculation: %w", sanitizedFilePath, err)
-	}
-	defer func() { _ = file.Close() }() // Ignore error
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return fmt.Errorf("failed to calculate SHA256 checksum for %q: %w", sanitizedFilePath, err)
-	}
-
-	checksumHex := fmt.Sprintf("%x", hash.Sum(nil))
-	// Format matches `sha256sum` output: checksum<space><space>filename\n
-	// Use the base name of the original file for the checksum content
-	baseFilename := filepath.Base(filePath)
-	content := fmt.Sprintf("%s  %s\n", checksumHex, baseFilename)
-
-	log.Debug().Str("checksum", checksumHex).Str("path", sanitizedChecksumPath).Msg("Writing checksum file")
-	// Ensure the file is written securely using OverwriteFile
-	if err := util.OverwriteFile(checksumPath, []byte(content), 0600); err != nil {
-		return fmt.Errorf("failed to write checksum file %q: %w", sanitizedChecksumPath, err)
-	}
-
-	return nil
-}
