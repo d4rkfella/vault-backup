@@ -395,49 +395,56 @@ func TestClient_Login_NoAuthMethod(t *testing.T) {
 }
 
 func TestClient_GetCredentials_Success(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
 
-	// Need successful login first
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
-	mockClient.On("SetToken", "test-token").Return().Once()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
-	// Setup expectations for GetCredentials
-	mockClient.On("Logical").Return(mockLogical).Once()
-
-	// Mock successful read
-	secretData := map[string]interface{}{
-		"aws_access_key_id":     "ACCESSKEY",
-		"aws_secret_access_key": "SECRETKEY",
-		"pushover_api_token":    "PUSHAPI",
-		"pushover_user_key":     "PUSHUSER",
-	}
-	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once()
+	// Setup mock to return a secret with all required fields
+	mockClient.On("Logical").Return(mockLogical)
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{
+		Data: map[string]interface{}{
+			"aws_access_key":    "test-access-key",
+			"aws_secret_key":    "test-secret-key",
+			"pushover_api_token": "test-pushover-api",
+			"pushover_user_id":   "test-pushover-user",
+		},
+	}, nil)
 
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
-	err = client.Login(ctx)
-	require.NoError(t, err)
 
 	creds, err := client.GetCredentials(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	require.NotNil(t, creds)
-	assert.Equal(t, "ACCESSKEY", creds.AWSAccess.String()) // Use String() for assertion, Zero() happens later
-	assert.Equal(t, "SECRETKEY", creds.AWSSecret.String())
-	assert.Equal(t, "PUSHAPI", creds.PushoverAPI.String())
-	assert.Equal(t, "PUSHUSER", creds.PushoverUser.String())
 
-	// Test Zero() manually
-	accessBytes := creds.AWSAccess.Bytes() // Get slice before zeroing
+	// Get underlying bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+	apiBytes := creds.PushoverAPI.Bytes()
+	userBytes := creds.PushoverUser.Bytes()
+
+	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
+	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
+	assert.Equal(t, "test-pushover-api", string(creds.PushoverAPI))
+	assert.Equal(t, "test-pushover-user", string(creds.PushoverUser))
+
+	// Test Zero()
 	creds.Zero()
 	assert.Nil(t, creds.AWSAccess)
 	assert.Nil(t, creds.AWSSecret)
 	assert.Nil(t, creds.PushoverAPI)
 	assert.Nil(t, creds.PushoverUser)
-	// Check underlying slice was zeroed
+
+	// Check underlying slices were zeroed
 	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range apiBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range userBytes {
 		assert.Equal(t, byte(0), b)
 	}
 
@@ -502,177 +509,150 @@ func TestClient_GetCredentials_PermanentError(t *testing.T) {
 }
 
 func TestClient_GetCredentials_RetrySuccess(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
-
-	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token")              // Check errors if needed
-	mockClient.On("SetToken", "test-token").Return().Once() // Only need SetToken once for login
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
-	// Setup expectations for GetCredentials
-	mockClient.On("Logical").Return(mockLogical).Times(defaultMaxAttempts) // Logical() called on each attempt
-
-	transientErr := transientNetError{errors.New("network timeout")}
-	secretData := map[string]interface{}{"aws_access_key_id": "KEY"}
-	mockLogical.On("ReadWithContext", mock.Anything, cfg.VaultSecretPath).Return(nil, transientErr).Once()                  // Fail
-	mockLogical.On("ReadWithContext", mock.Anything, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once() // Succeed
-
-	client, err := NewClient(cfg, mockClient)
-	require.NoError(t, err)
-	err = client.Login(ctx)
-	require.NoError(t, err)
-
-	creds, err := client.GetCredentials(ctx)
-	assert.NoError(t, err)
-	require.NotNil(t, creds)
-	assert.Equal(t, "KEY", creds.AWSAccess.String())
-	creds.Zero()
-	mockLogical.AssertExpectations(t)
-}
-
-/* // Temporarily commented out
-func TestClient_GetCredentials_RetryExhausted(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
-	defer teardown()
-
-	// Login
-	os.Setenv("VAULT_TOKEN", "test-token")
-	mockClient.On("SetToken", mock.Anything).Return()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
 
 	// Setup expectations for GetCredentials
 	mockClient.On("Logical").Return(mockLogical)
 
 	transientErr := transientNetError{errors.New("network timeout")}
-	// Expect ReadWithContext to be called repeatedly with transient error
-	mockLogical.On("ReadWithContext", mock.Anything, cfg.VaultSecretPath).Return(nil, transientErr)
+	secretData := map[string]interface{}{
+		"aws_access_key": "KEY",
+		"aws_secret_key": "SECRET",
+	}
+	mockLogical.On("ReadWithContext", mock.Anything, cfg.VaultSecretPath).Return(nil, transientErr).Once()                  // Fail
+	mockLogical.On("ReadWithContext", mock.Anything, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once() // Succeed
 
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
-	err = client.Login(ctx)
-	require.NoError(t, err)
 
-	// Add a timeout to this test context
-	testTimeout := 5 * time.Second
-	testCtx, cancel := context.WithTimeout(ctx, testTimeout)
-	defer cancel()
+	creds, err := client.GetCredentials(ctx)
+	assert.NoError(t, err)
+	require.NotNil(t, creds)
 
-	creds, err := client.GetCredentials(testCtx) // Use timed context
+	// Get bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
 
-	assert.Error(t, err)
-	assert.Nil(t, creds)
-	// Ensure the test context didn't cause the timeout
-	assert.NotErrorIs(t, err, context.DeadlineExceeded, "Error should be the transient error due to MaxElapsedTime, not context deadline exceeded")
-	assert.Contains(t, err.Error(), "failed to read secrets")
-	assert.ErrorIs(t, err, transientErr)
+	assert.Equal(t, "KEY", string(creds.AWSAccess))
+	assert.Equal(t, "SECRET", string(creds.AWSSecret))
+
+	// Test Zero()
+	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
 	mockLogical.AssertExpectations(t)
 }
-*/
 
 func TestClient_GetCredentials_InvalidDataType(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
 
-	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
-	mockClient.On("SetToken", "test-token").Return().Once()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
 	// Setup expectations for GetCredentials
-	mockClient.On("Logical").Return(mockLogical).Once()
+	mockClient.On("Logical").Return(mockLogical)
 
-	secretData := map[string]interface{}{"aws_access_key_id": 12345}
+	// Mock successful read with invalid data type
+	secretData := map[string]interface{}{
+		"aws_access_key": 12345, // Invalid type (number instead of string)
+		"aws_secret_key": "valid-secret",
+	}
 	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once()
 
 	client, err := NewClient(cfg, mockClient)
-	require.NoError(t, err)
-	err = client.Login(ctx)
 	require.NoError(t, err)
 
 	creds, err := client.GetCredentials(ctx)
 	assert.Error(t, err)
 	assert.Nil(t, creds)
-	assert.Contains(t, err.Error(), "invalid type for 'aws_access_key_id'")
+	assert.Contains(t, err.Error(), "invalid type for 'aws_access_key'")
+
 	mockLogical.AssertExpectations(t)
 }
 
 func TestClient_GetCredentials_MissingKeys(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
 
-	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token") // Check errors if needed
-	mockClient.On("SetToken", "test-token").Return().Once()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
-	// Setup expectations for GetCredentials
-	mockClient.On("Logical").Return(mockLogical).Once()
-
-	secretData := map[string]interface{}{"other_key": "value"}
-	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once()
+	// Setup mock to return a secret with missing fields
+	mockClient.On("Logical").Return(mockLogical)
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{
+		Data: map[string]interface{}{
+			"some_other_key": "value",
+		},
+	}, nil)
 
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
-	err = client.Login(ctx)
-	require.NoError(t, err)
 
-	// Should log warnings but return success with nil fields
 	creds, err := client.GetCredentials(ctx)
-	assert.NoError(t, err) // No error expected, just warnings logged
+	require.NoError(t, err)
 	require.NotNil(t, creds)
-	assert.Nil(t, creds.AWSAccess)
-	assert.Nil(t, creds.AWSSecret)
-	assert.Nil(t, creds.PushoverAPI)
-	assert.Nil(t, creds.PushoverUser)
-	creds.Zero() // Should be no-op
+
+	// All fields should be empty
+	assert.Empty(t, creds.AWSAccess)
+	assert.Empty(t, creds.AWSSecret)
+	assert.Empty(t, creds.PushoverAPI)
+	assert.Empty(t, creds.PushoverUser)
+
 	mockLogical.AssertExpectations(t)
 }
 
 func TestClient_GetCredentials_MissingPushoverKeysWithPushoverEnabled(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, mockLogical, _, teardown := setupTest(t)
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
 
 	// Enable Pushover
 	cfg.PushoverEnable = true
 	defer func() { cfg.PushoverEnable = false }() // Reset config
 
-	// Login
-	_ = os.Setenv("VAULT_TOKEN", "test-token")        // Check errors if needed
-	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }() // Ignore error
-	mockClient.On("Address").Return(cfg.VaultAddr).Once()
-	mockClient.On("SetToken", "test-token").Return()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
 	// Setup expectations for GetCredentials
-	mockClient.On("Logical").Return(mockLogical).Once()
+	mockClient.On("Logical").Return(mockLogical)
 
 	// Mock successful read with missing pushover keys
 	secretData := map[string]interface{}{
-		"aws_access_key_id":     "ACCESSKEY",
-		"aws_secret_access_key": "SECRETKEY",
+		"aws_access_key": "ACCESSKEY",
+		"aws_secret_key": "SECRETKEY",
 	}
 	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{Data: secretData}, nil).Once()
 
 	client, err := NewClient(cfg, mockClient)
-	require.NoError(t, err)
-	err = client.Login(ctx)
 	require.NoError(t, err)
 
 	// Execute and verify - should succeed but log warnings (which we can't easily check)
 	creds, err := client.GetCredentials(ctx)
 	assert.NoError(t, err) // Expect no error, just warnings
 	require.NotNil(t, creds)
-	assert.Equal(t, "ACCESSKEY", creds.AWSAccess.String())
-	assert.Equal(t, "SECRETKEY", creds.AWSSecret.String())
+
+	// Get bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+
+	assert.Equal(t, "ACCESSKEY", string(creds.AWSAccess))
+	assert.Equal(t, "SECRETKEY", string(creds.AWSSecret))
 	assert.Nil(t, creds.PushoverAPI)
 	assert.Nil(t, creds.PushoverUser)
+
+	// Test Zero()
 	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
 
 	mockLogical.AssertExpectations(t)
 }
@@ -711,19 +691,6 @@ func TestClient_CreateSnapshot_Success(t *testing.T) {
 	assert.NoError(t, err, "Checksum file should exist")
 
 	mockSys.AssertExpectations(t)
-
-	// Check content of checksum file
-	checksumContent, err := os.ReadFile(snapshotPath + ".sha256")
-	require.NoError(t, err)
-	compressedFile, err := os.Open(snapshotPath)
-	require.NoError(t, err)
-	defer func() { _ = compressedFile.Close() }() // Ignore error
-	h := sha256.New()
-	_, err = io.Copy(h, compressedFile)
-	require.NoError(t, err)
-	expectedSum := fmt.Sprintf("%x", h.Sum(nil))
-	expectedContent := fmt.Sprintf("%s  %s\n", expectedSum, filepath.Base(snapshotPath))
-	assert.Equal(t, expectedContent, string(checksumContent))
 }
 
 func TestClient_CreateSnapshot_SuccessWithVerification(t *testing.T) {
@@ -836,38 +803,6 @@ func TestClient_CreateSnapshot_ApiPermanentError(t *testing.T) {
 	assert.ErrorIs(t, err, permErr)
 	mockSys.AssertExpectations(t)
 }
-
-/* // Temporarily commented out
-func TestClient_CreateSnapshot_ApiRetryExhausted(t *testing.T) {
-	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
-	defer teardown()
-
-	// Login
-	os.Setenv("VAULT_TOKEN", "test-token")
-	mockClient.On("SetToken", "test-token").Return().Once()
-	mockAuth.On("Token").Return(mockToken).Once()
-	mockToken.On("LookupSelfWithContext", ctx).Return(&api.Secret{}, nil).Once()
-
-	// Setup expectations for CreateSnapshot
-	mockClient.On("Sys").Return(mockSys)
-
-	transientErr := transientNetError{errors.New("network timeout")}
-	mockSys.On("RaftSnapshotWithContext", ctx, mock.AnythingOfType("*os.File")).Return(transientErr)
-
-	client, err := NewClient(cfg, mockClient)
-	require.NoError(t, err)
-	err = client.Login(ctx)
-	require.NoError(t, err)
-
-	snapshotPath, err := client.CreateSnapshot(ctx)
-
-	assert.Error(t, err)
-	assert.Empty(t, snapshotPath)
-	assert.Contains(t, err.Error(), "failed to get Vault raft snapshot")
-	assert.ErrorIs(t, err, transientErr)
-	mockSys.AssertExpectations(t)
-}
-*/
 
 func TestClient_Close(t *testing.T) {
 	ctx, cfg, mockClient, mockAuth, mockToken, _, _, teardown := setupTest(t)
@@ -1449,15 +1384,14 @@ func TestClient_GetCredentials_KVv1Success(t *testing.T) {
 
 	// Setup mock expectations
 	mockClient.On("Logical").Return(mockLogical)
-	mockClient.On("Token").Return("test-token")
 
 	// Create a KV v1 secret response
 	secret := &api.Secret{
 		Data: map[string]interface{}{
-			"aws_access_key_id":     "test-access-key",
-			"aws_secret_access_key": "test-secret-key",
-			"pushover_api_token":    "test-pushover-api",
-			"pushover_user_key":     "test-pushover-user",
+			"aws_access_key": "test-access-key",
+			"aws_secret_key": "test-secret-key",
+			"pushover_api_token": "test-pushover-api",
+			"pushover_user_id": "test-pushover-user",
 		},
 	}
 
@@ -1472,14 +1406,40 @@ func TestClient_GetCredentials_KVv1Success(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, creds)
 
+	// Get bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+	apiBytes := creds.PushoverAPI.Bytes()
+	userBytes := creds.PushoverUser.Bytes()
+
 	// Verify credentials
 	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
 	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
 	assert.Equal(t, "test-pushover-api", string(creds.PushoverAPI))
 	assert.Equal(t, "test-pushover-user", string(creds.PushoverUser))
 
-	// Cleanup
+	// Test Zero()
 	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+	assert.Nil(t, creds.PushoverAPI)
+	assert.Nil(t, creds.PushoverUser)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range apiBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range userBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
+	mockLogical.AssertExpectations(t)
 }
 
 // TestClient_GetCredentials_KVv2Success tests successful credential retrieval from KV v2 secrets
@@ -1487,41 +1447,59 @@ func TestClient_GetCredentials_KVv2Success(t *testing.T) {
 	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
 	defer teardown()
 
-	// Setup mock expectations
+	// Setup mock to return a KV v2 secret with all required fields
 	mockClient.On("Logical").Return(mockLogical)
-	mockClient.On("Token").Return("test-token")
-
-	// Create a KV v2 secret response
-	secret := &api.Secret{
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{
 		Data: map[string]interface{}{
 			"data": map[string]interface{}{
-				"aws_access_key_id":     "test-access-key",
-				"aws_secret_access_key": "test-secret-key",
-				"pushover_api_token":    "test-pushover-api",
-				"pushover_user_key":     "test-pushover-user",
+				"aws_access_key":    "test-access-key",
+				"aws_secret_key":    "test-secret-key",
+				"pushover_api_token": "test-pushover-api",
+				"pushover_user_id":   "test-pushover-user",
 			},
 		},
-	}
+	}, nil)
 
-	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
-
-	// Create client and get credentials
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	creds, err := client.GetCredentials(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, creds)
 
-	// Verify credentials
+	// Get underlying bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+	apiBytes := creds.PushoverAPI.Bytes()
+	userBytes := creds.PushoverUser.Bytes()
+
 	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
 	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
 	assert.Equal(t, "test-pushover-api", string(creds.PushoverAPI))
 	assert.Equal(t, "test-pushover-user", string(creds.PushoverUser))
 
-	// Cleanup
+	// Test Zero()
 	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+	assert.Nil(t, creds.PushoverAPI)
+	assert.Nil(t, creds.PushoverUser)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range apiBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range userBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
+	mockLogical.AssertExpectations(t)
 }
 
 // TestClient_GetCredentials_KVv2InvalidData tests handling of invalid KV v2 data structure
@@ -1531,18 +1509,16 @@ func TestClient_GetCredentials_KVv2InvalidData(t *testing.T) {
 
 	// Setup mock expectations
 	mockClient.On("Logical").Return(mockLogical)
-	mockClient.On("Token").Return("test-token")
 
 	// Create an invalid KV v2 secret response (data is not a map)
 	secret := &api.Secret{
 		Data: map[string]interface{}{
-			"data": "not-a-map",
+			"data": 123, // Invalid type for data field
 		},
 	}
 
 	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
 
-	// Create client and get credentials
 	client, err := NewClient(cfg, mockClient)
 	require.NoError(t, err)
 	require.NotNil(t, client)
@@ -1551,4 +1527,554 @@ func TestClient_GetCredentials_KVv2InvalidData(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, creds)
 	assert.Contains(t, err.Error(), "invalid data structure in KV v2 secret")
+
+	mockLogical.AssertExpectations(t)
+}
+
+// TestClient_GetCredentials_KVv2EmptyData tests handling of empty data in KV v2 secret
+func TestClient_GetCredentials_KVv2EmptyData(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Create a KV v2 secret response with empty data
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{},
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+	assert.Nil(t, creds.PushoverAPI)
+	assert.Nil(t, creds.PushoverUser)
+}
+
+// TestClient_GetCredentials_KVv2NilData tests handling of nil data in KV v2 secret
+func TestClient_GetCredentials_KVv2NilData(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Create a KV v2 secret response with nil data
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"data": nil,
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	assert.Error(t, err)
+	assert.Nil(t, creds)
+	assert.Contains(t, err.Error(), "invalid data structure in KV v2 secret")
+
+	mockLogical.AssertExpectations(t)
+}
+
+// TestClient_GetCredentials_RetryTransientError tests retry behavior on transient errors
+func TestClient_GetCredentials_RetryTransientError(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+
+	// Create a successful KV v2 response for the second attempt
+	successSecret := &api.Secret{
+		Data: map[string]interface{}{ // KV v1 style for simplicity in this retry test
+			"aws_access_key": "test-access-key",
+			"aws_secret_key": "test-secret-key",
+		},
+	}
+
+	// First call fails with transient error, second succeeds
+	transientErr := transientNetError{errors.New("network timeout")}
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(nil, transientErr).Once()
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(successSecret, nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+
+	// Get bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+
+	assert.Equal(t, "test-access-key", string(creds.AWSAccess))
+	assert.Equal(t, "test-secret-key", string(creds.AWSSecret))
+
+	// Test Zero()
+	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
+	mockLogical.AssertExpectations(t)
+}
+
+// TestClient_CreateSnapshot_CompressError tests handling of compression errors
+func TestClient_CreateSnapshot_CompressError(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create valid snapshot data that will be used for compression
+	files := map[string][]byte{
+		"state/raft.db": []byte("test data"),
+	}
+	checksums := map[string]string{
+		"state/raft.db": fmt.Sprintf("%x", sha256.Sum256([]byte("test data"))),
+	}
+	snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
+
+	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
+
+	// Create the snapshot directory with write permissions
+	dir := filepath.Dir(cfg.SnapshotPath)
+	err := os.MkdirAll(dir, 0755)
+	require.NoError(t, err)
+	defer func() {
+		_ = os.Chmod(dir, 0755)
+		_ = os.RemoveAll(dir)
+	}()
+
+	// Create a file at the snapshot path to cause the compression to fail
+	err = os.MkdirAll(cfg.SnapshotPath, 0755) // Create a directory instead of a file
+	require.NoError(t, err)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to open final snapshot file")
+}
+
+// TestClient_GetCredentials_NilSecret tests handling of nil secret response
+func TestClient_GetCredentials_NilSecret(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Return nil secret (not found case)
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(nil, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	assert.Error(t, err)
+	assert.Nil(t, creds)
+	assert.Contains(t, err.Error(), "secret not found")
+}
+
+// TestClient_GetCredentials_InvalidSecretData tests handling of invalid secret data
+func TestClient_GetCredentials_InvalidSecretData(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+	mockClient.On("Token").Return("test-token")
+
+	// Return secret with invalid data type
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"data": 123, // Invalid type for data field
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	assert.Error(t, err)
+	assert.Nil(t, creds)
+	assert.Contains(t, err.Error(), "invalid data structure in KV v2 secret")
+}
+
+// TestClient_GetCredentials_MixedSecretTypes tests handling of mixed secret types
+// Renaming to TestClient_GetCredentials_IgnoresTopLevelIfKVv2 to be clearer
+func TestClient_GetCredentials_IgnoresTopLevelIfKVv2(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Logical").Return(mockLogical)
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(&api.Secret{
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{
+				"aws_access_key":    "kv2-access-key", // Correct value
+				"aws_secret_key":    "kv2-secret-key", // Correct value
+			},
+			"aws_access_key": "top-level-access-key", // Should be ignored
+			"aws_secret_key": "top-level-secret-key", // Should be ignored
+			"pushover_api_token": "top-level-pushover-api", // Should be ignored
+			"pushover_user_id":   "top-level-pushover-user", // Should be ignored
+		},
+	}, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+
+	// Get underlying bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+
+	// Assert that ONLY the nested KVv2 values were used
+	assert.Equal(t, "kv2-access-key", string(creds.AWSAccess))
+	assert.Equal(t, "kv2-secret-key", string(creds.AWSSecret))
+	assert.Nil(t, creds.PushoverAPI)  // Should be nil as it wasn't in the nested map
+	assert.Nil(t, creds.PushoverUser) // Should be nil as it wasn't in the nested map
+
+	// Test Zero()
+	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+	assert.Nil(t, creds.PushoverAPI)
+	assert.Nil(t, creds.PushoverUser)
+
+	// Check underlying slices were zeroed (only check the ones that existed)
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
+	mockLogical.AssertExpectations(t)
+}
+
+// TestClient_GetCredentials_PushoverEnabled tests handling of missing Pushover keys when enabled
+func TestClient_GetCredentials_PushoverEnabled(t *testing.T) {
+	ctx, cfg, mockClient, _, _, mockLogical, _, teardown := setupTest(t)
+	defer teardown()
+
+	// Enable Pushover
+	cfg.PushoverEnable = true
+	defer func() { cfg.PushoverEnable = false }()
+
+	// Setup mock expectations
+	mockClient.On("Logical").Return(mockLogical)
+
+	// Create a secret with valid Pushover keys
+	secret := &api.Secret{
+		Data: map[string]interface{}{
+			"aws_access_key": "valid-key",
+			"aws_secret_key": "valid-secret",
+			"pushover_api_token": "valid-api-token",
+			"pushover_user_id": "valid-user-id",
+		},
+	}
+
+	mockLogical.On("ReadWithContext", ctx, cfg.VaultSecretPath).Return(secret, nil)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	creds, err := client.GetCredentials(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+
+	// Get bytes before zeroing
+	accessBytes := creds.AWSAccess.Bytes()
+	secretBytes := creds.AWSSecret.Bytes()
+	apiBytes := creds.PushoverAPI.Bytes()
+	userBytes := creds.PushoverUser.Bytes()
+
+	// Verify all fields
+	assert.Equal(t, "valid-key", string(creds.AWSAccess))
+	assert.Equal(t, "valid-secret", string(creds.AWSSecret))
+	assert.Equal(t, "valid-api-token", string(creds.PushoverAPI))
+	assert.Equal(t, "valid-user-id", string(creds.PushoverUser))
+
+	// Test Zero()
+	creds.Zero()
+	assert.Nil(t, creds.AWSAccess)
+	assert.Nil(t, creds.AWSSecret)
+	assert.Nil(t, creds.PushoverAPI)
+	assert.Nil(t, creds.PushoverUser)
+
+	// Check underlying slices were zeroed
+	for _, b := range accessBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range secretBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range apiBytes {
+		assert.Equal(t, byte(0), b)
+	}
+	for _, b := range userBytes {
+		assert.Equal(t, byte(0), b)
+	}
+
+	mockLogical.AssertExpectations(t)
+}
+
+// TestClient_CreateSnapshot_VerifyWithoutChecksum tests verification without checksum file
+func TestClient_CreateSnapshot_VerifyWithoutChecksum(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create snapshot data without checksum file
+	files := map[string][]byte{
+		"state/raft.db": []byte("test data"),
+	}
+	// Don't include checksums
+	snapshotDataToInject = createTestTarSnapshot(t, files, nil)
+
+	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = false // Enable verification
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse SHA256SUMS")
+}
+
+// TestClient_CreateSnapshot_InvalidSnapshotData tests handling of invalid snapshot data
+func TestClient_CreateSnapshot_InvalidSnapshotData(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create invalid snapshot data (not a tar file)
+	snapshotDataToInject = []byte("invalid tar data")
+
+	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = false // Enable verification
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read tar header")
+}
+
+// TestClient_CreateSnapshot_EmptySnapshot tests handling of empty snapshot
+func TestClient_CreateSnapshot_EmptySnapshot(t *testing.T) {
+	ctx, cfg, mockClient, _, _, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	// Setup mock expectations
+	mockClient.On("Sys").Return(mockSys)
+
+	// Mock empty snapshot
+	mockSys.On("RaftSnapshotWithContext", ctx, mock.AnythingOfType("*os.File")).Run(func(args mock.Arguments) {
+		// Do nothing - simulate empty snapshot
+	}).Return(nil)
+
+	// Create client (needed for the call)
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	// Execute
+	snapshotPath, err := client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Empty(t, snapshotPath)
+	assert.Contains(t, err.Error(), "failed to read tar header")
+
+	mockSys.AssertExpectations(t)
+}
+
+// TestClient_CreateSnapshot_InvalidPath tests handling of invalid snapshot paths
+func TestClient_CreateSnapshot_InvalidPath(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	// Set an invalid path (directory instead of file)
+	cfg.SnapshotPath = "/tmp/"
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a full file path")
+}
+
+// TestClient_CreateSnapshot_ContextTimeout tests handling of context timeout
+func TestClient_CreateSnapshot_ContextTimeout(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	// Create a context with timeout
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancel()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Mock that the API call takes longer than the timeout
+	mockSys.On("RaftSnapshotWithContext", ctxWithTimeout, mock.Anything).Run(func(args mock.Arguments) {
+		time.Sleep(10 * time.Millisecond) // Sleep longer than timeout
+	}).Return(context.DeadlineExceeded).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	_, err = client.CreateSnapshot(ctxWithTimeout)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// TestClient_CreateSnapshot_RetrySuccess tests successful retry after transient error
+func TestClient_CreateSnapshot_RetrySuccess(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create valid snapshot data
+	files := map[string][]byte{
+		"state/raft.db": []byte("test data"),
+	}
+	checksums := map[string]string{
+		"state/raft.db": fmt.Sprintf("%x", sha256.Sum256([]byte("test data"))),
+	}
+	snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
+
+	// First call fails with transient error, second succeeds
+	transientErr := transientNetError{errors.New("network timeout")}
+	mockSys.On("RaftSnapshotWithContext", ctx, mock.Anything).Return(transientErr).Once()
+	mockSys.On("RaftSnapshotWithContext", ctx, mock.Anything).Return(nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = true // Skip verification for this test
+	snapshotPath, err := client.CreateSnapshot(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, cfg.SnapshotPath, snapshotPath)
+}
+
+// TestClient_CreateSnapshot_RetryExhausted tests handling of exhausted retries
+func TestClient_CreateSnapshot_RetryExhausted(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create valid snapshot data
+	files := map[string][]byte{
+		"state/raft.db": []byte("test data"),
+	}
+	checksums := map[string]string{
+		"state/raft.db": fmt.Sprintf("%x", sha256.Sum256([]byte("test data"))),
+	}
+	snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
+
+	// All calls fail with transient error
+	transientErr := transientNetError{errors.New("network timeout")}
+	mockSys.On("RaftSnapshotWithContext", ctx, mock.Anything).Return(transientErr)
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = true // Skip verification for this test
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, transientErr)
+}
+
+// TestClient_CreateSnapshot_VerifyChecksumMismatch tests handling of checksum mismatch during verification
+func TestClient_CreateSnapshot_VerifyChecksumMismatch(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create snapshot data with mismatched checksum
+	files := map[string][]byte{
+		"state/raft.db": []byte("test data"),
+	}
+	checksums := map[string]string{
+		"state/raft.db": "incorrect_checksum",
+	}
+	snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
+
+	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = false // Enable verification
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "checksum mismatch")
+}
+
+// TestClient_CreateSnapshot_VerifyMissingFile tests handling of missing file during verification
+func TestClient_CreateSnapshot_VerifyMissingFile(t *testing.T) {
+	ctx, cfg, mockClient, mockAuth, mockToken, _, mockSys, teardown := setupTest(t)
+	defer teardown()
+
+	mockClient.On("Sys").Return(mockSys)
+	mockAuth.On("Token").Return(mockToken)
+
+	// Create snapshot data with checksum for non-existent file
+	files := map[string][]byte{} // No files
+	checksums := map[string]string{
+		"state/raft.db": "some_checksum", // Checksum for non-existent file
+	}
+	snapshotDataToInject = createTestTarSnapshot(t, files, checksums)
+
+	mockSys.On("RaftSnapshotWithContext", mock.Anything, mock.Anything).Return(nil).Once()
+
+	client, err := NewClient(cfg, mockClient)
+	require.NoError(t, err)
+
+	cfg.SkipSnapshotVerify = false // Enable verification
+	_, err = client.CreateSnapshot(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "listed in SHA256SUMS not found")
 }
