@@ -12,7 +12,7 @@ import (
 const DEFAULT_VAULT_NAMESPACE = "vault"
 
 type Client struct {
-	vaultClient  *vault.Client
+	vaultClient  VaultAPI
 	forceRestore bool
 }
 
@@ -33,6 +33,10 @@ type Config struct {
 }
 
 func NewClient(ctx context.Context, config *Config) (*Client, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config cannot be nil")
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 
@@ -84,11 +88,10 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 	if config.Namespace == "" {
 		config.Namespace = DEFAULT_VAULT_NAMESPACE
 	}
-
 	client.SetNamespace(config.Namespace)
 
 	return &Client{
-		vaultClient:  client,
+		vaultClient:  &vaultAPIWrapper{client},
 		forceRestore: config.ForceRestore,
 	}, nil
 }

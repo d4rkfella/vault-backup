@@ -2,23 +2,26 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"time"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-func (c *Client) HeadObject(ctx context.Context) (*s3.HeadObjectOutput, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	output, err := c.s3Client.HeadObject(timeoutCtx, &s3.HeadObjectInput{
+func (c *Client) HeadObject(ctx context.Context, key string) (bool, error) {
+	input := &s3.HeadObjectInput{
 		Bucket: aws.String(c.config.Bucket),
-		Key:    aws.String(c.config.FileName),
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("head object failed for %s: %w", c.config.FileName, err)
+		Key:    aws.String(key),
 	}
-	return output, nil
+
+	_, err := c.s3Client.HeadObject(ctx, input)
+	if err != nil {
+		var nsk *types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to head object %q: %w", key, err)
+	}
+	return true, nil
 }

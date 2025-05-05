@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -9,12 +10,14 @@ import (
 )
 
 func (c *Client) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
-	result, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+	input := &s3.GetObjectInput{
 		Bucket: aws.String(c.config.Bucket),
 		Key:    aws.String(key),
-	})
+	}
+
+	result, err := c.s3Client.GetObject(ctx, input)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get object %q: %w", key, err)
 	}
 	return result.Body, nil
 }

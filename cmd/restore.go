@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/d4rkfella/vault-backup/internal/app"
-	"github.com/d4rkfella/vault-backup/internal/pkg/notify"
+	"github.com/d4rkfella/vault-backup/internal/pkg/pushover"
 	"github.com/d4rkfella/vault-backup/internal/pkg/s3"
 	"github.com/d4rkfella/vault-backup/internal/pkg/vault"
 	"github.com/spf13/cobra"
@@ -10,6 +12,8 @@ import (
 )
 
 var forceRestore bool
+
+var runRestore = app.Restore
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
@@ -22,7 +26,6 @@ var restoreCmd = &cobra.Command{
 			Token:          viper.GetString("vault_token"),
 			Namespace:      viper.GetString("vault_namespace"),
 			Timeout:        viper.GetDuration("vault_timeout"),
-			RevokeToken:    viper.GetBool("vault_revoke_token"),
 			K8sAuthEnabled: viper.GetBool("vault_k8s_auth_enabled"),
 			K8sAuthPath:    viper.GetString("vault_k8s_auth_path"),
 			K8sTokenPath:   viper.GetString("vault_k8s_token_path"),
@@ -41,15 +44,36 @@ var restoreCmd = &cobra.Command{
 			FileName:        viper.GetString("s3_filename"),
 		}
 
-		var notifyCfg *notify.Config
-		if pushoverAPIKey != "" && pushoverUserKey != "" {
-			notifyCfg = &notify.Config{
-				APIKey:  pushoverAPIKey,
-				UserKey: pushoverUserKey,
+		var notifyCfg *pushover.Config
+		pkey := viper.GetString("notify_pushover_api_key")
+		ukey := viper.GetString("notify_pushover_user_key")
+		if pkey != "" && ukey != "" {
+			notifyCfg = &pushover.Config{
+				APIKey:  pkey,
+				UserKey: ukey,
 			}
 		}
 
-		return app.Restore(ctx, vaultCfg, s3Cfg, notifyCfg)
+		vaultClient, err := vault.NewClient(ctx, vaultCfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize vault client: %w", err)
+		}
+
+		s3Client, err := s3.NewClient(ctx, s3Cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize s3 client: %w", err)
+		}
+
+		var appNotifyClient app.NotifyClient
+		if notifyCfg != nil {
+			appNotifyClient = pushover.NewClient(notifyCfg)
+		}
+
+		if forceRestore {
+			fmt.Println("Force restore option enabled.")
+		}
+
+		return runRestore(ctx, vaultClient, s3Client, appNotifyClient, s3Cfg.FileName)
 	},
 }
 

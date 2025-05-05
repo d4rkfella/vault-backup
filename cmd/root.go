@@ -18,7 +18,6 @@ var (
 	vaultToken      string
 	vaultNamespace  string
 	vaultTimeout    time.Duration
-	revokeToken     bool
 	vaultCACert     string
 	k8sAuthEnabled  bool
 	k8sAuthPath     string
@@ -34,9 +33,12 @@ var (
 	pushoverUserKey string
 )
 
+var version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "vault-backup",
-	Short: "Tool for backing up and restoring Vault using snapshots",
+	Use:     "vault-backup",
+	Short:   "vault-backup is a CLI tool to backup and restore Vault data using raft snapshots.",
+	Version: version,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := cmd.Help(); err != nil {
 			fmt.Fprintf(os.Stderr, "error displaying help: %v\n", err)
@@ -59,7 +61,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&vaultToken, "vault-token", "t", "", "Vault token")
 	rootCmd.PersistentFlags().DurationVar(&vaultTimeout, "vault-timeout", 30*time.Second, "Vault client timeout")
 	rootCmd.PersistentFlags().StringVar(&vaultCACert, "vault-ca-cert", "", "Path to the Vault CA certificate file")
-	rootCmd.PersistentFlags().BoolVar(&revokeToken, "revoke-token", false, "Revoke the Vault token upon completion")
 
 	rootCmd.PersistentFlags().BoolVar(&k8sAuthEnabled, "vault-k8s-auth-enabled", false, "Enable Kubernetes authentication")
 	rootCmd.PersistentFlags().StringVar(&k8sAuthPath, "vault-k8s-auth-path", "kubernetes", "Kubernetes auth mount path")
@@ -80,6 +81,9 @@ func init() {
 }
 
 func initConfig() {
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
 	} else {
@@ -91,12 +95,15 @@ func initConfig() {
 		viper.SetConfigName(".vault-backup")
 	}
 
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
 	if err := viper.ReadInConfig(); err == nil {
 		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+	} else {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Fprintln(os.Stderr, "Error reading config file:", err)
+		}
 	}
+
+	bindFlags(rootCmd)
 }
 
 func bindFlags(cmd *cobra.Command) {

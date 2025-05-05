@@ -20,7 +20,7 @@ type Config struct {
 }
 
 type Client struct {
-	s3Client *s3.Client
+	s3Client s3API
 	config   *Config
 }
 
