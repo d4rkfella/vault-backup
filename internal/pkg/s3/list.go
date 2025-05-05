@@ -2,56 +2,52 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type ListObjectsInput struct {
-	Bucket    string
-	Prefix    string
-	Delimiter string
-	MaxKeys   int32
+	Prefix            string
+	Delimiter         string
+	ContinuationToken *string
 }
 
 type ListObjectsOutput struct {
-	Contents       []s3.Object
-	CommonPrefixes []string
-	IsTruncated    bool
-	NextMarker     *string
+	Contents              []types.Object
+	CommonPrefixes        []types.CommonPrefix
+	IsTruncated           *bool
+	NextContinuationToken *string
 }
 
-func ListObjects(ctx context.Context, client *s3.Client, input ListObjectsInput) (*ListObjectsOutput, error) {
-	var allContents []s3.Object
-	var allCommonPrefixes []string
-	var isTruncated bool
-	var nextMarker *string
+func (c *Client) ListObjects(ctx context.Context, input ListObjectsInput) (*ListObjectsOutput, error) {
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	err := client.ListObjectsV2PagesWithContext(timeoutCtx, &s3.ListObjectsV2Input{
-		Bucket:    &input.Bucket,
-		Prefix:    &input.Prefix,
-		Delimiter: &input.Delimiter,
-		MaxKeys:   &input.MaxKeys,
-	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		allContents = append(allContents, page.Contents...)
-		allCommonPrefixes = append(allCommonPrefixes, page.CommonPrefixes...)
-		isTruncated = page.IsTruncated
-		nextMarker = page.NextContinuationToken
-		return !lastPage
+	paginator := s3.NewListObjectsV2Paginator(c.s3Client, &s3.ListObjectsV2Input{
+		Bucket:            aws.String(c.config.Bucket),
+		Prefix:            aws.String(input.Prefix),
+		Delimiter:         aws.String(input.Delimiter),
+		MaxKeys:           aws.Int32(1000),
+		ContinuationToken: input.ContinuationToken,
 	})
 
-	if err != nil {
-		return nil, err
+	var result ListObjectsOutput
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(timeoutCtx)
+		if err != nil {
+			return nil, fmt.Errorf("list objects pagination failed: %w", err)
+		}
+
+		result.Contents = append(result.Contents, page.Contents...)
+		result.CommonPrefixes = append(result.CommonPrefixes, page.CommonPrefixes...)
+		result.IsTruncated = page.IsTruncated
+		result.NextContinuationToken = page.NextContinuationToken
 	}
 
-	return &ListObjectsOutput{
-		Contents:       allContents,
-		CommonPrefixes: allCommonPrefixes,
-		IsTruncated:    isTruncated,
-		NextMarker:     nextMarker,
-	}, nil
+	return &result, nil
 }

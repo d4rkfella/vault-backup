@@ -17,7 +17,7 @@ type NotificationType string
 
 const (
 	NotificationTypeBackup  NotificationType = "Backup"
-	NotificationTypeRestore NotificationType = "Restore"
+	NotificationTypeRestore NotificationType = "Restoration"
 )
 
 type NotificationStatus struct {
@@ -35,10 +35,13 @@ type Config struct {
 }
 
 type Client struct {
-	config Config
+	config *Config
 }
 
-func NewClient(config Config) *Client {
+func NewClient(config *Config) *Client {
+	if config == nil {
+		return nil
+	}
 	return &Client{
 		config: config,
 	}
@@ -53,7 +56,7 @@ func (c *Client) Notify(ctx context.Context, status NotificationStatus) error {
 	statusEmoji := map[bool]string{true: "✅ Success", false: "❌ Failed"}[status.Success]
 	fmt.Fprintf(message, "• Status: %s\n", statusEmoji)
 	fmt.Fprintf(message, "• Type: %s\n", status.Type)
-	fmt.Fprintf(message, "• Duration: %s\n", status.Duration.Round(time.Millisecond))
+	fmt.Fprintf(message, "• Duration: %s\n", status.Duration.Round(time.Second))
 
 	if status.Success {
 		if status.SizeBytes > 0 {
@@ -71,18 +74,26 @@ func (c *Client) Notify(ctx context.Context, status NotificationStatus) error {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	writer.WriteField("token", c.config.APIKey)
-	writer.WriteField("user", c.config.UserKey)
-	writer.WriteField("title", fmt.Sprintf("Vault %s Report", status.Type))
-	writer.WriteField("message", message.String())
-	writer.WriteField("html", "1")
-	writer.WriteField("priority", map[bool]string{
-		true:  "0",
-		false: "1",
-	}[status.Success])
+	fields := map[string]string{
+		"token":   c.config.APIKey,
+		"user":    c.config.UserKey,
+		"title":   fmt.Sprintf("Vault %s Report", status.Type),
+		"message": message.String(),
+		"html":    "1",
+		"priority": map[bool]string{
+			true:  "0",
+			false: "1",
+		}[status.Success],
+	}
+
+	for field, value := range fields {
+		if err := writeField(writer, field, value); err != nil {
+			return err
+		}
+	}
 
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close multipart writer: %w", err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -91,15 +102,19 @@ func (c *Client) Notify(ctx context.Context, status NotificationStatus) error {
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		"https://api.pushover.net/1/messages.json", body)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
+		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -119,4 +134,11 @@ func isValidPushoverToken(token string) bool {
 func isValidPushoverUser(userKey string) bool {
 	clean := strings.TrimSpace(userKey)
 	return len(clean) == 30 && strings.HasPrefix(clean, "u")
+}
+
+func writeField(writer *multipart.Writer, fieldname, value string) error {
+	if err := writer.WriteField(fieldname, value); err != nil {
+		return fmt.Errorf("failed to write %s field: %w", fieldname, err)
+	}
+	return nil
 }

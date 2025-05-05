@@ -6,10 +6,5 @@ import (
 )
 
 func (c *Client) Restore(ctx context.Context, r io.Reader) error {
-	if !c.forceRestore {
-		return ErrForceRestoreRequired
-	}
-	return c.vaultClient.Sys().RaftSnapshotRestoreWithContext(ctx, r, true)
+	return c.vaultClient.Sys().RaftSnapshotRestoreWithContext(ctx, r, c.forceRestore)
 }
-
-var ErrForceRestoreRequired = errors.New("force restore is required but not enabled")

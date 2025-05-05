@@ -3,120 +3,146 @@ package app
 import (
 	"context"
 	"fmt"
-	"io"
+	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
-	"github.com/darkfella/vault-backup/internal/pkg/notify"
-	"github.com/darkfella/vault-backup/internal/pkg/s3"
-	"github.com/darkfella/vault-backup/internal/pkg/vault"
+	"github.com/d4rkfella/vault-backup/internal/pkg/notify"
+	"github.com/d4rkfella/vault-backup/internal/pkg/s3"
+	"github.com/d4rkfella/vault-backup/internal/pkg/vault"
 )
 
-type RestoreConfig struct {
-	VaultConfig  *vault.Config
-	S3Config     *s3.Config
-	NotifyConfig *notify.Config
-	BackupFile   string
-	ForceRestore bool
-}
+func Restore(ctx context.Context, vaultCfg *vault.Config, s3Cfg *s3.Config, notifyCfg *notify.Config) error {
+	startTime := time.Now()
 
-func Restore(ctx context.Context, config *RestoreConfig) error {
-	vaultClient, err := vault.NewClient(config.VaultConfig)
+	var notifyClient *notify.Client
+	var restoreSize int64
+	var restoreErr error
+	var backupFile string
+
+	vaultClient, err := vault.NewClient(ctx, vaultCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create vault client: %w", err)
 	}
-	defer vaultClient.Close()
 
-	s3Client, err := s3.NewClient(config.S3Config)
+	s3Client, err := s3.NewClient(ctx, s3Cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create s3 client: %w", err)
 	}
 
-	var notifyClient *notify.Client
-	if config.NotifyConfig != nil {
-		notifyClient, err = notify.NewClient(config.NotifyConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create notification client: %w", err)
-		}
-	}
-
-	startTime := time.Now()
-	var restoreSize int64
-	var restoreErr error
-
 	defer func() {
-		if notifyClient != nil {
+		if notifyCfg != nil {
+			notifyClient = notify.NewClient(notifyCfg)
+
 			status := notify.NotificationStatus{
-				Success:  restoreErr == nil,
-				Duration: time.Since(startTime),
-				Size:     restoreSize,
-				Error:    restoreErr,
-				Type:     notify.Restore,
+				Success:   restoreErr == nil,
+				Duration:  time.Since(startTime),
+				SizeBytes: restoreSize,
+				Error:     restoreErr,
+				Type:      notify.NotificationTypeRestore,
 			}
 			if restoreErr == nil {
-				status.Metadata = map[string]string{
-					"filename": config.BackupFile,
+				status.Additional = map[string]string{
+					"filename": backupFile,
 				}
 			}
-			notifyClient.Notify(ctx, status)
+			fmt.Println("Sending notification...")
+			if err := notifyClient.Notify(ctx, status); err != nil {
+				fmt.Printf("Warning: failed to send notification: %v\n", err)
+			}
+		}
+		if vaultCfg.RevokeToken {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			fmt.Println("Revoking vault token...")
+			if revokeErr := vaultClient.RevokeToken(cleanupCtx); revokeErr != nil {
+				fmt.Printf("Warning: failed to revoke token: %v\n", revokeErr)
+			}
 		}
 	}()
 
-	if config.BackupFile == "" {
-		config.BackupFile, err = findLatestBackup(ctx, s3Client)
-		if err != nil {
-			restoreErr = fmt.Errorf("failed to find latest backup: %w", err)
+	backupFile = s3Cfg.FileName
+	if backupFile == "" {
+		fmt.Println("No specific backup file provided via config/flags, searching for the latest snapshot...")
+		var findErr error
+		backupFile, findErr = findLatestBackup(ctx, s3Client)
+		if findErr != nil {
+			restoreErr = fmt.Errorf("failed to find latest backup file: %w", findErr)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", restoreErr)
 			return restoreErr
 		}
+		fmt.Printf("Found latest backup file: %s\n", backupFile)
+	} else {
+		fmt.Printf("Attempting to use user-specified backup file: %s\n", backupFile)
+		fmt.Printf("Verifying specified backup file '%s' exists in S3...\n", backupFile)
+		_, headErr := s3Client.HeadObject(ctx)
+		if headErr != nil {
+			restoreErr = fmt.Errorf("specified backup file %q not found or inaccessible: %w", backupFile, headErr)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", restoreErr)
+			return restoreErr
+		}
+		fmt.Printf("Successfully verified specified backup file '%s' exists.\n", backupFile)
 	}
 
-	reader, err := s3Client.GetObject(ctx, config.BackupFile)
+	fmt.Printf("Proceeding with restore using backup file: %s\n", backupFile)
+
+	reader, err := s3Client.GetObject(ctx, backupFile)
 	if err != nil {
-		restoreErr = fmt.Errorf("failed to get backup file: %w", err)
+		restoreErr = fmt.Errorf("failed to download snapshot file: %w", err)
 		return restoreErr
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			fmt.Printf("Warning: Failed to close reader: %v\n", err)
+		}
+	}()
 
-	if err := vaultClient.Restore(ctx, reader, config.ForceRestore); err != nil {
-		restoreErr = fmt.Errorf("failed to restore vault: %w", err)
+	if err := vaultClient.Restore(ctx, reader); err != nil {
+		restoreErr = fmt.Errorf("failed to restore snapshot: %w", err)
 		return restoreErr
 	}
+
+	fmt.Println("Snapshot restore completed successfully")
 
 	return nil
 }
 
 func findLatestBackup(ctx context.Context, s3Client *s3.Client) (string, error) {
-	objects, err := s3Client.ListObjects(ctx, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to list objects: %w", err)
-	}
+	var latestKey string
+	var latestTime time.Time
+	var token *string
 
-	var backups []struct {
-		key  string
-		date time.Time
-	}
-
-	for _, obj := range objects {
-		if filepath.Ext(obj.Key) == ".snap" {
-			backups = append(backups, struct {
-				key  string
-				date time.Time
-			}{
-				key:  obj.Key,
-				date: obj.LastModified,
-			})
+	for {
+		out, err := s3Client.ListObjects(ctx, s3.ListObjectsInput{
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return "", fmt.Errorf("listing page failed: %w", err)
 		}
+
+		for _, obj := range out.Contents {
+			if obj.Key == nil || obj.LastModified == nil {
+				continue
+			}
+			if filepath.Ext(*obj.Key) != ".snap" {
+				continue
+			}
+			t := obj.LastModified.UTC()
+			if latestKey == "" || t.After(latestTime) {
+				latestKey = *obj.Key
+				latestTime = t
+			}
+		}
+
+		if out.NextContinuationToken == nil {
+			break
+		}
+		token = out.NextContinuationToken
 	}
 
-	if len(backups) == 0 {
-		return "", fmt.Errorf("no backup files found")
+	if latestKey == "" {
+		return "", fmt.Errorf("no backup files were found")
 	}
-
-	// Sort by date (newest first)
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].date.After(backups[j].date)
-	})
-
-	return backups[0].key, nil
+	return latestKey, nil
 }

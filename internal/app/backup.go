@@ -21,24 +21,20 @@ const (
 	SNAPSHOT_EXTENSION = "snap"
 )
 
-type BackupConfig struct {
-	VaultConfig  *vault.Config
-	S3Config     *s3.Config
-	NotifyConfig *notify.Config
-}
-
 func verifyInternalChecksums(data []byte) (bool, error) {
 	reader := bytes.NewReader(data)
-
 	gzReader, err := gzip.NewReader(reader)
 	if err != nil {
 		return false, fmt.Errorf("gzip error: %w", err)
 	}
-	defer gzReader.Close()
+	defer func() {
+		if err := gzReader.Close(); err != nil {
+			fmt.Printf("warning: failed to close gzip reader: %v\n", err)
+		}
+	}()
 
 	tarReader := tar.NewReader(gzReader)
-	expected := make(map[string]string)
-	computed := make(map[string]string)
+	var shaSumsContent []byte
 
 	for {
 		hdr, err := tarReader.Next()
@@ -47,54 +43,28 @@ func verifyInternalChecksums(data []byte) (bool, error) {
 		}
 		if err != nil {
 			return false, fmt.Errorf("tar error: %w", err)
+		}
+
+		content, err := io.ReadAll(tarReader)
+		if err != nil {
+			return false, fmt.Errorf("failed to read file %s: %w", hdr.Name, err)
 		}
 
 		if hdr.Name == "SHA256SUMS" {
-			content, err := io.ReadAll(tarReader)
-			if err != nil {
-				return false, fmt.Errorf("failed to read SHA256SUMS: %w", err)
+			shaSumsContent = content
+		} else {
+			expected := parseSHA256SUMS(shaSumsContent)
+			if expectedSum, exists := expected[hdr.Name]; exists {
+				h := sha256.New()
+				if _, err := h.Write(content); err != nil {
+					return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
+				}
+				computedSum := fmt.Sprintf("%x", h.Sum(nil))
+				if computedSum != expectedSum {
+					return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
+						hdr.Name, expectedSum, computedSum)
+				}
 			}
-			expected = parseSHA256SUMS(content)
-			break
-		}
-	}
-
-	if len(expected) == 0 {
-		return false, fmt.Errorf("SHA256SUMS file missing")
-	}
-
-	reader.Seek(0, 0)
-	gzReader, _ = gzip.NewReader(reader)
-	tarReader = tar.NewReader(gzReader)
-
-	for {
-		hdr, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, fmt.Errorf("tar error: %w", err)
-		}
-
-		if _, exists := expected[hdr.Name]; !exists {
-			continue
-		}
-
-		h := sha256.New()
-		if _, err := io.Copy(h, tarReader); err != nil {
-			return false, fmt.Errorf("failed to hash %s: %w", hdr.Name, err)
-		}
-		computed[hdr.Name] = fmt.Sprintf("%x", h.Sum(nil))
-	}
-
-	for filename, expectedSum := range expected {
-		actual, exists := computed[filename]
-		if !exists {
-			return false, fmt.Errorf("missing file %s in snapshot", filename)
-		}
-		if actual != expectedSum {
-			return false, fmt.Errorf("checksum mismatch for %s (expected %s, got %s)",
-				filename, expectedSum, actual)
 		}
 	}
 
@@ -116,19 +86,28 @@ func parseSHA256SUMS(content []byte) map[string]string {
 	return sums
 }
 
-func Backup(ctx context.Context, config BackupConfig) error {
+func Backup(ctx context.Context, vaultCfg *vault.Config, s3Cfg *s3.Config, notifyCfg *notify.Config) error {
 	startTime := time.Now()
 	fileName := fmt.Sprintf("backup-%s.%s", time.Now().Format(TIME_LAYOUT), SNAPSHOT_EXTENSION)
+
+	var notifyClient *notify.Client
 	var snapshotSize int64
 	var err error
 
-	var notifyClient *notify.Client
-	if config.NotifyConfig != nil {
-		notifyClient = notify.NewClient(*config.NotifyConfig)
+	vaultClient, err := vault.NewClient(ctx, vaultCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create vault client: %w", err)
+	}
+
+	s3Client, err := s3.NewClient(ctx, s3Cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create s3 client: %w", err)
 	}
 
 	defer func() {
-		if notifyClient != nil {
+		if notifyCfg != nil {
+			notifyClient = notify.NewClient(notifyCfg)
+
 			status := notify.NotificationStatus{
 				Success:   err == nil,
 				Duration:  time.Since(startTime),
@@ -139,30 +118,30 @@ func Backup(ctx context.Context, config BackupConfig) error {
 					"File": fileName,
 				},
 			}
+			fmt.Println("Sending notification...")
 			if notifyErr := notifyClient.Notify(ctx, status); notifyErr != nil {
 				fmt.Printf("Failed to send notification: %v\n", notifyErr)
 			}
 		}
+
+		if vaultCfg.RevokeToken {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			fmt.Println("Revoking vault token...")
+			if revokeErr := vaultClient.RevokeToken(cleanupCtx); revokeErr != nil {
+				fmt.Printf("Warning: failed to revoke token: %v\n", revokeErr)
+			}
+		}
 	}()
 
-	fmt.Println("Starting backup...")
-
-	vaultClient, err := vault.NewClient(ctx, *config.VaultConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create vault client: %w", err)
-	}
-
-	s3Client, err := s3.NewClient(ctx, *config.S3Config)
-	if err != nil {
-		return fmt.Errorf("failed to create s3 client: %w", err)
-	}
-
 	var buf bytes.Buffer
-
+	fmt.Println("Creating backup...")
 	if err := vaultClient.Backup(ctx, &buf); err != nil {
 		return fmt.Errorf("failed to create vault backup: %w", err)
 	}
 
+	fmt.Println("Verifying checksums...")
 	valid, err := verifyInternalChecksums(buf.Bytes())
 	if err != nil {
 		return fmt.Errorf("failed to verify backup: %w", err)
@@ -174,15 +153,11 @@ func Backup(ctx context.Context, config BackupConfig) error {
 	snapshotSize = int64(buf.Len())
 	reader := bytes.NewReader(buf.Bytes())
 
-	if err := s3Client.PutObject(ctx, s3.PutObjectInput{
-		Bucket:      config.S3Config.Bucket,
-		Key:         fileName,
-		Body:        reader,
-		ContentType: "application/x-tar",
-	}); err != nil {
+	fmt.Println("Uploading to s3 bucket...")
+	if err := s3Client.PutObject(ctx, fileName, reader); err != nil {
 		return fmt.Errorf("failed to upload backup to s3: %w", err)
 	}
 
-	fmt.Printf("Backup with name '%s' created and verified successfully\n", fileName)
+	fmt.Printf("Backup process completed sucesfully")
 	return nil
 }

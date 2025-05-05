@@ -2,9 +2,11 @@ package vault
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/hashicorp/vault/api"
+	vault "github.com/hashicorp/vault/api"
+	auth "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
 const DEFAULT_VAULT_NAMESPACE = "vault"
@@ -19,45 +21,63 @@ type Config struct {
 	Token        string
 	Namespace    string
 	ForceRestore bool
-	TmpPath      string
 	FileName     string
 	Timeout      time.Duration
+	CACert       string
+	RevokeToken  bool
 	// Kubernetes auth config
 	K8sAuthEnabled bool
 	K8sAuthPath    string
+	K8sTokenPath   string
 	K8sRole        string
-	K8sJWT         string
 }
 
-func NewClient(ctx context.Context, config Config) (*Client, error) {
+func NewClient(ctx context.Context, config *Config) (*Client, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 
-	vaultConfig := api.DefaultConfig()
+	vaultConfig := vault.DefaultConfig()
 	vaultConfig.Address = config.Address
 
-	client, err := api.NewClient(vaultConfig)
+	client, err := vault.NewClient(vaultConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to initialize Vault client: %w", err)
 	}
+
+	if config.CACert != "" {
+		tlsConfig := &vault.TLSConfig{
+			CACert: config.CACert,
+		}
+		err = vaultConfig.ConfigureTLS(tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS: %w", err)
+		}
+	}
+
+	client.SetClientTimeout(config.Timeout)
 
 	if config.Namespace != "" {
 		client.SetNamespace(config.Namespace)
 	}
 
 	if config.K8sAuthEnabled {
-		authData := map[string]interface{}{
-			"role": config.K8sRole,
-			"jwt":  config.K8sJWT,
-		}
-
-		secret, err := client.Logical().WriteWithContext(timeoutCtx, config.K8sAuthPath+"/login", authData)
+		k8sAuth, err := auth.NewKubernetesAuth(
+			config.K8sRole,
+			auth.WithMountPath(config.K8sAuthPath),
+			auth.WithServiceAccountTokenPath(config.K8sTokenPath),
+		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("unable to initialize Kubernetes auth method: %w", err)
 		}
 
-		client.SetToken(secret.Auth.ClientToken)
-	} else if config.Token != "" {
+		authInfo, err := client.Auth().Login(timeoutCtx, k8sAuth)
+		if err != nil {
+			return nil, fmt.Errorf("unable to log in with Kubernetes auth: %w", err)
+		}
+		if authInfo == nil {
+			return nil, fmt.Errorf("no auth info was returned after login")
+		}
+	} else {
 		client.SetToken(config.Token)
 	}
 
@@ -71,4 +91,8 @@ func NewClient(ctx context.Context, config Config) (*Client, error) {
 		vaultClient:  client,
 		forceRestore: config.ForceRestore,
 	}, nil
+}
+
+func (c *Client) RevokeToken(ctx context.Context) error {
+	return c.vaultClient.Auth().Token().RevokeSelfWithContext(ctx, c.vaultClient.Token())
 }

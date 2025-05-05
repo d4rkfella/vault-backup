@@ -18,6 +18,12 @@ var (
 	vaultToken      string
 	vaultNamespace  string
 	vaultTimeout    time.Duration
+	revokeToken     bool
+	vaultCACert     string
+	k8sAuthEnabled  bool
+	k8sAuthPath     string
+	k8sTokenPath    string
+	k8sRole         string
 	s3AccessKey     string
 	s3SecretKey     string
 	s3Bucket        string
@@ -28,39 +34,38 @@ var (
 	pushoverUserKey string
 )
 
-// rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "vault-backup",
 	Short: "Tool for backing up and restoring Vault using snapshots",
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		if err := cmd.Help(); err != nil {
+			fmt.Fprintf(os.Stderr, "error displaying help: %v\n", err)
+			os.Exit(1)
+		}
 	},
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute() {
-	cobra.CheckErr(rootCmd.Execute())
-}
-
-// SetContext sets the context on the root command
-func SetContext(ctx context.Context) {
-	rootCmd.SetContext(ctx)
+func ExecuteContext(ctx context.Context) {
+	cobra.CheckErr(rootCmd.ExecuteContext(ctx))
 }
 
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Config file flag
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.vault-backup.yaml)")
 
-	// Vault configuration flags
 	rootCmd.PersistentFlags().StringVarP(&vaultAddr, "vault-address", "a", "http://localhost:8200", "Vault server address")
 	rootCmd.PersistentFlags().StringVarP(&vaultNamespace, "vault-namespace", "n", "", "Vault namespace")
 	rootCmd.PersistentFlags().StringVarP(&vaultToken, "vault-token", "t", "", "Vault token")
 	rootCmd.PersistentFlags().DurationVar(&vaultTimeout, "vault-timeout", 30*time.Second, "Vault client timeout")
+	rootCmd.PersistentFlags().StringVar(&vaultCACert, "vault-ca-cert", "", "Path to the Vault CA certificate file")
+	rootCmd.PersistentFlags().BoolVar(&revokeToken, "revoke-token", false, "Revoke the Vault token upon completion")
 
-	// S3 configuration flags
+	rootCmd.PersistentFlags().BoolVar(&k8sAuthEnabled, "vault-k8s-auth-enabled", false, "Enable Kubernetes authentication")
+	rootCmd.PersistentFlags().StringVar(&k8sAuthPath, "vault-k8s-auth-path", "kubernetes", "Kubernetes auth mount path")
+	rootCmd.PersistentFlags().StringVar(&k8sTokenPath, "vault-k8s-token-path", "/var/run/secrets/kubernetes.io/serviceaccount/token", "Kubernetes service account token mount path")
+	rootCmd.PersistentFlags().StringVar(&k8sRole, "vault-k8s-role", "", "Kubernetes role for authentication")
+
 	rootCmd.PersistentFlags().StringVar(&s3AccessKey, "s3-access-key", "", "S3 access key")
 	rootCmd.PersistentFlags().StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret key")
 	rootCmd.PersistentFlags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket name")
@@ -68,22 +73,19 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint URL")
 	rootCmd.PersistentFlags().StringVar(&s3FileName, "s3-filename", "", "S3 filename")
 
-	// Notification configuration flags
 	rootCmd.PersistentFlags().StringVar(&pushoverAPIKey, "pushover-api-key", "", "Pushover API key")
 	rootCmd.PersistentFlags().StringVar(&pushoverUserKey, "pushover-user-key", "", "Pushover user key")
+
+	bindFlags(rootCmd)
 }
 
-// initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	if cfgFile != "" {
-		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
 	} else {
-		// Find home directory.
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err)
 
-		// Search config in home directory with name ".vault-backup" (without extension).
 		viper.AddConfigPath(home)
 		viper.SetConfigType("yaml")
 		viper.SetConfigName(".vault-backup")
@@ -92,23 +94,29 @@ func initConfig() {
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 
-	// Bind flags to viper
-	_ = viper.BindPFlags(rootCmd.PersistentFlags())
-	bindFlags(rootCmd)
-
-	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
 		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 	}
 }
 
-// bindFlags binds each cobra flag to its associated viper configuration
 func bindFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().VisitAll(func(f *pflag.Flag) {
-		// Apply the viper config value to the flag when the flag is not set and viper has a value
-		if !f.Changed && viper.IsSet(f.Name) {
-			val := viper.Get(f.Name)
-			cmd.PersistentFlags().Set(f.Name, fmt.Sprintf("%v", val))
+		configName := strings.ReplaceAll(f.Name, "-", "_")
+
+		if err := viper.BindPFlag(configName, f); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to bind flag %q to viper key %q: %v\n", f.Name, configName, err)
+		}
+
+		envVar := strings.ToUpper(configName)
+		if err := viper.BindEnv(configName, envVar); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to bind flag %q to env var %q: %v\n", f.Name, envVar, err)
+		}
+
+		if !f.Changed && viper.IsSet(configName) {
+			val := viper.Get(configName)
+			if err := cmd.PersistentFlags().Set(f.Name, fmt.Sprintf("%v", val)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to set flag %q from viper key %q (%v): %v\n", f.Name, configName, val, err)
+			}
 		}
 	})
 }
