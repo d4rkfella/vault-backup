@@ -25,7 +25,7 @@ func TestRestore_Success_SpecificFile(t *testing.T) {
 	s3Mock.On("ResolveBackupKey", ctx).Return(specificFilename, nil).Once()
 
 	mockReadCloser := io.NopCloser(strings.NewReader(mockRestoreData))
-	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, nil).Once()
+	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, mockRestoreDataSize, nil).Once()
 	vaultMock.On("Restore", ctx, mock.Anything).Return(nil).Once()
 	notifyMock.On("Notify", ctx, true, "restore", mock.AnythingOfType("time.Duration"), mockRestoreDataSize, nil, mock.AnythingOfType("map[string]string")).Return(nil).Once()
 
@@ -49,7 +49,7 @@ func TestRestore_Success_FindLatest(t *testing.T) {
 	s3Mock.On("ResolveBackupKey", ctx).Return(latestFilename, nil).Once()
 
 	mockReadCloser := io.NopCloser(strings.NewReader(mockRestoreData))
-	s3Mock.On("GetObject", ctx, latestFilename).Return(mockReadCloser, nil).Once()
+	s3Mock.On("GetObject", ctx, latestFilename).Return(mockReadCloser, mockRestoreDataSize, nil).Once()
 	vaultMock.On("Restore", ctx, mock.Anything).Return(nil).Once()
 	notifyMock.On("Notify", ctx, true, "restore", mock.AnythingOfType("time.Duration"), mockRestoreDataSize, nil, mock.MatchedBy(func(m map[string]string) bool { return m["File"] == latestFilename })).Return(nil).Once()
 
@@ -98,7 +98,7 @@ func TestRestore_Fail_S3GetObject(t *testing.T) {
 	expectedError := errors.New("s3 get object failed")
 
 	s3Mock.On("ResolveBackupKey", ctx).Return(specificFilename, nil).Once()
-	s3Mock.On("GetObject", ctx, specificFilename).Return(nil, expectedError).Once()
+	s3Mock.On("GetObject", ctx, specificFilename).Return(nil, int64(0), expectedError).Once()
 	notifyMock.On("Notify", ctx,
 		false,
 		"restore",
@@ -131,7 +131,7 @@ func TestRestore_Fail_VaultRestore(t *testing.T) {
 
 	s3Mock.On("ResolveBackupKey", ctx).Return(specificFilename, nil).Once()
 	mockReadCloser := io.NopCloser(strings.NewReader(mockRestoreData))
-	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, nil).Once()
+	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, mockRestoreDataSize, nil).Once()
 	vaultMock.On("Restore", ctx, mock.Anything).Return(expectedError).Once()
 	notifyMock.On("Notify", ctx,
 		false,
@@ -165,7 +165,7 @@ func TestRestore_Fail_Notification(t *testing.T) {
 
 	s3Mock.On("ResolveBackupKey", ctx).Return(specificFilename, nil).Once()
 	mockReadCloser := io.NopCloser(strings.NewReader(mockRestoreData))
-	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, nil).Once()
+	s3Mock.On("GetObject", ctx, specificFilename).Return(mockReadCloser, mockRestoreDataSize, nil).Once()
 	vaultMock.On("Restore", ctx, mock.Anything).Return(nil).Once()
 	notifyMock.On("Notify", ctx,
 		true,

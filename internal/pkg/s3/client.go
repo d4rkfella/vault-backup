@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -40,7 +41,7 @@ func NewClient(ctx context.Context, cfg *Config) (*Client, error) {
 		config.WithCredentialsProvider(creds),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load default AWS config: %w", err)
 	}
 
 	opts := []func(*s3.Options){}

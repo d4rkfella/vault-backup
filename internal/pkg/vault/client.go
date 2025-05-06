@@ -9,6 +9,8 @@ import (
 	auth "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
+var vaultNewClientFunc = vault.NewClient
+
 const DEFAULT_VAULT_NAMESPACE = "vault"
 
 type Client struct {
@@ -42,7 +44,7 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 	vaultConfig := vault.DefaultConfig()
 	vaultConfig.Address = config.Address
 
-	client, err := vault.NewClient(vaultConfig)
+	client, err := vaultNewClientFunc(vaultConfig)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize Vault client: %w", err)
 	}
@@ -53,7 +55,7 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 		}
 		err = vaultConfig.ConfigureTLS(tlsConfig)
 		if err != nil {
-			return nil, fmt.Errorf("failed to configure TLS: %w", err)
+			return nil, fmt.Errorf("failed to configure TLS for Vault client: %w", err)
 		}
 	}
 
@@ -78,7 +80,7 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 			return nil, fmt.Errorf("unable to log in with Kubernetes auth: %w", err)
 		}
 		if authInfo == nil {
-			return nil, fmt.Errorf("no auth info was returned after login")
+			return nil, fmt.Errorf("no auth info was returned after Kubernetes login")
 		}
 	} else {
 		client.SetToken(config.Token)

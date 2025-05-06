@@ -112,7 +112,11 @@ func validateConfig() *ValidationError {
 func generateStandardFixes(flagNames []string) (solutions []string, settingAdvice []string) {
 	solutions = []string{"Provide the required value(s)"}
 
-	flagList := strings.Join(flagNames, " VALUE ")
+	var flagsWithValues []string
+	for _, flag := range flagNames {
+		flagsWithValues = append(flagsWithValues, flag+" VALUE")
+	}
+	flagList := strings.Join(flagsWithValues, " ")
 
 	var envVars []string
 	for _, flag := range flagNames {

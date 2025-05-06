@@ -6,5 +6,9 @@ import (
 )
 
 func (c *Client) Backup(ctx context.Context, w io.Writer) error {
-	return c.vaultClient.Sys().RaftSnapshotWithContext(ctx, w)
+	err := c.vaultClient.Sys().RaftSnapshotWithContext(ctx, w)
+	if err != nil {
+		return err
+	}
+	return nil
 }

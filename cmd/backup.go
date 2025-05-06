@@ -59,20 +59,24 @@ var backupCmd = &cobra.Command{
 
 		vaultClient, err := vault.NewClient(ctx, vaultCfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize vault client: %w", err)
+			return fmt.Errorf("failed to initialize vault client for backup: %w", err)
 		}
 
 		s3Client, err := s3.NewClient(ctx, s3Cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize s3 client: %w", err)
+			return fmt.Errorf("failed to initialize s3 client for backup: %w", err)
 		}
 
-		var pushoverClient *pushover.Client
+		var pushoverClient app.NotifyClient
 		if pushoverCfg != nil {
 			pushoverClient = pushover.NewClient(pushoverCfg)
 		}
 
-		return runBackup(ctx, vaultClient, s3Client, pushoverClient)
+		err = runBackup(ctx, vaultClient, s3Client, pushoverClient)
+		if err != nil {
+			return fmt.Errorf("backup command failed: %w", err)
+		}
+		return nil
 	},
 }
 

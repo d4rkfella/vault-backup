@@ -63,15 +63,15 @@ var restoreCmd = &cobra.Command{
 
 		vaultClient, err := vault.NewClient(ctx, vaultCfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize vault client: %w", err)
+			return fmt.Errorf("failed to initialize vault client for restore: %w", err)
 		}
 
 		s3Client, err := s3.NewClient(ctx, s3Cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize s3 client: %w", err)
+			return fmt.Errorf("failed to initialize s3 client for restore: %w", err)
 		}
 
-		var pushoverClient *pushover.Client
+		var pushoverClient app.NotifyClient
 		if pushoverCfg != nil {
 			pushoverClient = pushover.NewClient(pushoverCfg)
 		}
@@ -80,12 +80,16 @@ var restoreCmd = &cobra.Command{
 			fmt.Println("Force restore option enabled.")
 		}
 
-		return runRestore(ctx, vaultClient, s3Client, pushoverClient)
+		err = runRestore(ctx, vaultClient, s3Client, pushoverClient)
+		if err != nil {
+			return fmt.Errorf("restore command failed: %w", err)
+		}
+		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(restoreCmd)
 
-	restoreCmd.Flags().BoolVarP(&forceRestore, "force", "f", false, "Force restore operation")
+	restoreCmd.Flags().BoolVarP(&forceRestore, "force", "f", false, "force restore")
 }

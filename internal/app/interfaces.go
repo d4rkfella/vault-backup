@@ -13,7 +13,7 @@ type VaultClient interface {
 
 type S3Client interface {
 	PutObject(ctx context.Context, key string, r io.Reader) error
-	GetObject(ctx context.Context, key string) (io.ReadCloser, error)
+	GetObject(ctx context.Context, key string) (body io.ReadCloser, sizeBytes int64, err error)
 	ResolveBackupKey(ctx context.Context) (string, error)
 }
 

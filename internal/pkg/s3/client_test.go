@@ -81,7 +81,7 @@ func TestPutObject_Failure(t *testing.T) {
 	err := client.PutObject(ctx, key, reader)
 
 	require.Error(t, err)
-	assert.EqualError(t, err, expectedError.Error())
+	assert.Equal(t, expectedError, err)
 	mockAPI.AssertExpectations(t)
 }
 
@@ -101,10 +101,11 @@ func TestGetObject_Success(t *testing.T) {
 		return *input.Bucket == cfg.Bucket && *input.Key == key
 	})).Return(mockGetObjectOutput, nil).Once()
 
-	bodyReader, err := client.GetObject(ctx, key)
+	bodyReader, sizeBytes, err := client.GetObject(ctx, key)
 
 	require.NoError(t, err)
 	require.NotNil(t, bodyReader)
+	assert.Equal(t, int64(len(expectedContent)), sizeBytes, "Incorrect size returned")
 	defer func() {
 		if err := bodyReader.Close(); err != nil {
 			t.Logf("Warning: failed to close body reader in test: %v", err)
@@ -127,11 +128,13 @@ func TestGetObject_Failure(t *testing.T) {
 
 	mockAPI.On("GetObject", ctx, mock.AnythingOfType("*s3.GetObjectInput")).Return(nil, expectedError).Once()
 
-	bodyReader, err := client.GetObject(ctx, key)
+	bodyReader, sizeBytes, err := client.GetObject(ctx, key)
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, expectedError.Error())
+	assert.ErrorContains(t, err, "failed to get S3 object")
 	assert.Nil(t, bodyReader)
+	assert.Zero(t, sizeBytes, "Size should be zero on error")
 	mockAPI.AssertExpectations(t)
 }
 
@@ -213,7 +216,7 @@ func TestResolveBackupKey_ConfiguredFileHeadError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, expectedError.Error())
-	assert.ErrorContains(t, err, "failed to check S3 object")
+	assert.ErrorContains(t, err, "failed to check existence of specified backup file")
 	assert.Empty(t, key)
 	mockAPI.AssertExpectations(t)
 }
@@ -224,11 +227,11 @@ func TestResolveBackupKey_NoConfiguredFileFindLatest(t *testing.T) {
 	cfg := &Config{Bucket: "test-bucket", FileName: ""} // No filename configured
 	client := &Client{s3Client: mockAPI, config: cfg}
 
-	now := time.Now()
-	expectedKey := "latest-backup.snap"
+	now := time.Now().UTC()
+	expectedKey := fmt.Sprintf("raft_snapshot-%s.snap", now.Format(time.RFC3339))
 	mockOutput := &s3.ListObjectsV2Output{
 		Contents: []types.Object{
-			{Key: aws.String("older-backup.snap"), LastModified: aws.Time(now.Add(-1 * time.Hour))},
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-1*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-1 * time.Hour))},
 			{Key: aws.String(expectedKey), LastModified: aws.Time(now)},
 		},
 		IsTruncated: aws.Bool(false),
@@ -263,7 +266,7 @@ func TestResolveBackupKey_NoConfiguredFileNoSnapshotsFound(t *testing.T) {
 	key, err := client.ResolveBackupKey(ctx)
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNoBackupFilesFound)
+	assert.Contains(t, err.Error(), "no suitable backup snapshots found")
 	assert.Empty(t, key)
 	mockAPI.AssertExpectations(t)
 }
@@ -304,13 +307,12 @@ func TestResolveBackupKey_NoConfiguredFileFindLatest_MultiPage(t *testing.T) {
 	cfg := &Config{Bucket: "test-bucket", FileName: ""}
 	client := &Client{s3Client: mockAPI, config: cfg}
 
-	now := time.Now()
-	expectedKey := "backup-page2-latest.snap"
+	now := time.Now().UTC()
+	expectedKey := fmt.Sprintf("raft_snapshot-%s.snap", now.Format(time.RFC3339))
 
 	mockOutput1 := &s3.ListObjectsV2Output{
 		Contents: []types.Object{
-			{Key: aws.String("backup-page1-a.snap"), LastModified: aws.Time(now.Add(-5 * time.Hour))},
-			// Test handling nil key/time
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-5*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-5 * time.Hour))},
 			{Key: nil, LastModified: aws.Time(now.Add(-4 * time.Hour))},
 			{Key: aws.String("backup-page1-b.snap"), LastModified: nil},
 		},
@@ -321,7 +323,7 @@ func TestResolveBackupKey_NoConfiguredFileFindLatest_MultiPage(t *testing.T) {
 	mockOutput2 := &s3.ListObjectsV2Output{
 		Contents: []types.Object{
 			{Key: aws.String(expectedKey), LastModified: aws.Time(now)},
-			{Key: aws.String("backup-page2-early.snap"), LastModified: aws.Time(now.Add(-6 * time.Hour))},
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-6*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-6 * time.Hour))},
 		},
 		IsTruncated:           aws.Bool(false),
 		NextContinuationToken: nil,
@@ -358,7 +360,7 @@ func TestResolveBackupKey_ConfiguredFileHead_NonApiError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, expectedError)
-	assert.ErrorContains(t, err, "failed to check S3 object")
+	assert.ErrorContains(t, err, "failed to check existence of specified backup file")
 	assert.Empty(t, key)
 	mockAPI.AssertExpectations(t)
 }
@@ -368,4 +370,74 @@ func TestNewClient_NilConfig(t *testing.T) {
 	_, err := NewClient(context.Background(), nil)
 	assert.Error(t, err)
 	assert.EqualError(t, err, "S3 client config cannot be nil")
+}
+
+func TestResolveBackupKey_NoConfiguredFileFindLatest_CorrectFormat(t *testing.T) {
+	ctx := context.Background()
+	mockAPI := new(mockS3API)
+	cfg := &Config{Bucket: "test-bucket", FileName: ""}
+	client := &Client{s3Client: mockAPI, config: cfg}
+
+	now := time.Now().UTC()
+	expectedKey := fmt.Sprintf("raft_snapshot-%s.snap", now.Format(time.RFC3339))
+	mockOutput := &s3.ListObjectsV2Output{
+		Contents: []types.Object{
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-1*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-1 * time.Hour))},
+			{Key: aws.String(expectedKey), LastModified: aws.Time(now)},
+		},
+		IsTruncated: aws.Bool(false),
+	}
+
+	mockAPI.On("ListObjectsV2", ctx, mock.MatchedBy(func(input *s3.ListObjectsV2Input) bool {
+		return *input.Bucket == cfg.Bucket && input.ContinuationToken == nil
+	})).Return(mockOutput, nil).Once()
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.NoError(t, err)
+	assert.Equal(t, expectedKey, key)
+	mockAPI.AssertExpectations(t)
+}
+
+func TestResolveBackupKey_NoConfiguredFileFindLatest_CorrectFormat_MultiPage(t *testing.T) {
+	ctx := context.Background()
+	mockAPI := new(mockS3API)
+	cfg := &Config{Bucket: "test-bucket", FileName: ""}
+	client := &Client{s3Client: mockAPI, config: cfg}
+
+	now := time.Now().UTC()
+	expectedKey := fmt.Sprintf("raft_snapshot-%s.snap", now.Format(time.RFC3339))
+
+	mockOutput1 := &s3.ListObjectsV2Output{
+		Contents: []types.Object{
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-5*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-5 * time.Hour))},
+			{Key: nil, LastModified: aws.Time(now.Add(-4 * time.Hour))},
+			{Key: aws.String("some_other_file.txt"), LastModified: nil},
+		},
+		IsTruncated:           aws.Bool(true),
+		NextContinuationToken: aws.String("token1"),
+	}
+
+	mockOutput2 := &s3.ListObjectsV2Output{
+		Contents: []types.Object{
+			{Key: aws.String(expectedKey), LastModified: aws.Time(now)},
+			{Key: aws.String(fmt.Sprintf("raft_snapshot-%s.snap", now.Add(-6*time.Hour).Format(time.RFC3339))), LastModified: aws.Time(now.Add(-6 * time.Hour))},
+		},
+		IsTruncated:           aws.Bool(false),
+		NextContinuationToken: nil,
+	}
+
+	mockAPI.On("ListObjectsV2", ctx, mock.MatchedBy(func(input *s3.ListObjectsV2Input) bool {
+		return *input.Bucket == cfg.Bucket && input.ContinuationToken == nil
+	})).Return(mockOutput1, nil).Once()
+
+	mockAPI.On("ListObjectsV2", ctx, mock.MatchedBy(func(input *s3.ListObjectsV2Input) bool {
+		return *input.Bucket == cfg.Bucket && input.ContinuationToken != nil && *input.ContinuationToken == "token1"
+	})).Return(mockOutput2, nil).Once()
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.NoError(t, err)
+	assert.Equal(t, expectedKey, key)
+	mockAPI.AssertExpectations(t)
 }

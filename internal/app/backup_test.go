@@ -102,16 +102,22 @@ type mockS3Client struct {
 
 var _ S3Client = (*mockS3Client)(nil)
 
-func (m *mockS3Client) PutObject(ctx context.Context, key string, body io.Reader) error {
-	bodyBytes, _ := io.ReadAll(body)
-	args := m.Called(ctx, key, bodyBytes)
+func (m *mockS3Client) PutObject(ctx context.Context, key string, r io.Reader) error {
+	args := m.Called(ctx, key, r)
 	return args.Error(0)
 }
 
-func (m *mockS3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
+func (m *mockS3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	args := m.Called(ctx, key)
-	reader, _ := args.Get(0).(io.ReadCloser)
-	return reader, args.Error(1)
+	body, _ := args.Get(0).(io.ReadCloser)
+	size, _ := args.Get(1).(int64)
+	err := args.Error(2)
+	return body, size, err
+}
+
+func (m *mockS3Client) GetObjectMetadata(ctx context.Context, key string) (int64, error) {
+	args := m.Called(ctx, key)
+	return args.Get(0).(int64), args.Error(1)
 }
 
 func (m *mockS3Client) ResolveBackupKey(ctx context.Context) (string, error) {
@@ -137,7 +143,7 @@ func TestBackup_Success_WithNotification_WithRevoke(t *testing.T) {
 	notifyMock := new(mockNotifyClient)
 
 	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
-	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(nil).Once()
+	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("*bytes.Reader")).Return(nil).Once()
 	notifyMock.On("Notify", ctx,
 		true,
 		"backup",
@@ -165,7 +171,7 @@ func TestBackup_Success_NoNotification_NoRevoke(t *testing.T) {
 	var notifyMock NotifyClient = nil
 
 	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
-	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(nil).Once()
+	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("*bytes.Reader")).Return(nil).Once()
 
 	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
@@ -210,7 +216,7 @@ func TestBackup_S3UploadFails(t *testing.T) {
 	expectedError := errors.New("s3 put error")
 
 	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
-	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(expectedError).Once()
+	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("*bytes.Reader")).Return(expectedError).Once()
 	notifyMock.On("Notify", ctx,
 		false,
 		"backup",
@@ -271,7 +277,7 @@ func TestBackup_NotificationFails(t *testing.T) {
 	notificationError := errors.New("pushover api error")
 
 	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
-	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(nil).Once()
+	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("*bytes.Reader")).Return(nil).Once()
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
 	os.Stderr = w

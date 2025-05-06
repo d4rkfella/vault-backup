@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/vault/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -202,4 +203,24 @@ func TestRestore_Failure(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, expectedError.Error())
 	mSys.AssertExpectations(t)
+}
+
+func TestNewClient_VaultClientError(t *testing.T) {
+	ctx := context.Background()
+	config := &Config{Address: "http://invalid"}
+	expectedError := errors.New("vault init failed")
+
+	// Temporarily replace the real NewClient function for this test
+	originalNewClientFunc := vaultNewClientFunc
+	vaultNewClientFunc = func(c *api.Config) (*api.Client, error) {
+		return nil, expectedError
+	}
+	defer func() { vaultNewClientFunc = originalNewClientFunc }() // Restore original func
+
+	client, err := NewClient(ctx, config)
+
+	require.Error(t, err)
+	assert.Nil(t, client)
+	assert.ErrorIs(t, err, expectedError)
+	assert.ErrorContains(t, err, "unable to initialize Vault client")
 }

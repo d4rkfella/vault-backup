@@ -97,14 +97,18 @@ func parseSHA256SUMS(content []byte) map[string]string {
 
 func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client, notifyClient NotifyClient) error {
 	startTime := time.Now()
-	fileName := fmt.Sprintf("backup-%s.%s", startTime.Format(TIME_LAYOUT), SNAPSHOT_EXTENSION)
-	var snapshotSize int64
 	var backupErr error
+	var backupFilename string
+	var snapshotSize int64
 
 	defer func() {
 		if notifyClient != nil {
 			fmt.Println("Sending notification...")
-			details := map[string]string{"File": fileName}
+			details := map[string]string{"File": backupFilename}
+			if backupErr == nil && snapshotSize > 0 {
+			} else {
+				snapshotSize = 0
+			}
 			if notifyErr := notifyClient.Notify(
 				ctx,
 				backupErr == nil,
@@ -119,35 +123,41 @@ func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client, not
 		}
 	}()
 
-	fmt.Println("Starting backup...")
-
+	fmt.Println("Taking vault snapshot...")
 	var buf bytes.Buffer
 	if err := vaultClient.Backup(ctx, &buf); err != nil {
-		backupErr = fmt.Errorf("failed to create vault backup: %w", err)
+		backupErr = fmt.Errorf("vault snapshot failed: %w", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", backupErr)
 		return backupErr
 	}
 
 	fmt.Println("Verifying snapshot checksums...")
-	valid, err := verifyInternalChecksums(buf.Bytes())
+	snapshotData := buf.Bytes()
+	valid, err := verifyInternalChecksums(snapshotData)
 	if err != nil {
 		backupErr = fmt.Errorf("failed during snapshot verification: %w", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", backupErr)
 		return backupErr
 	}
 	if !valid {
-		backupErr = fmt.Errorf("snapshot verification failed: checksum mismatch or missing files")
+		backupErr = fmt.Errorf("snapshot verification failed: checksum mismatch or invalid format")
+		fmt.Fprintf(os.Stderr, "Error: %v\n", backupErr)
 		return backupErr
 	}
 	fmt.Println("Snapshot verification successful.")
 
-	snapshotSize = int64(buf.Len())
-	reader := bytes.NewReader(buf.Bytes())
+	snapshotSize = int64(len(snapshotData))
 
-	fmt.Printf("Uploading verified snapshot '%s' (%d bytes) to S3...\n", fileName, snapshotSize)
-	if err := s3Client.PutObject(ctx, fileName, reader); err != nil {
-		backupErr = fmt.Errorf("failed to upload backup to s3: %w", err)
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	backupFilename = fmt.Sprintf("raft_snapshot-%s.snap", timestamp)
+
+	fmt.Printf("Uploading verified snapshot %s to S3...\n", backupFilename)
+	if err := s3Client.PutObject(ctx, backupFilename, bytes.NewReader(snapshotData)); err != nil {
+		backupErr = fmt.Errorf("failed to upload snapshot '%s' to S3: %w", backupFilename, err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", backupErr)
 		return backupErr
 	}
 
-	fmt.Printf("Backup '%s' created, verified, and uploaded successfully.\n", fileName)
+	fmt.Println("Backup completed successfully")
 	return nil
 }

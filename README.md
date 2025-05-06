@@ -13,9 +13,7 @@
 
 ## Installation
 
-You can download pre-built binaries for your operating system from the [GitHub Releases](https://github.com/d4rkfella/vault-backup/releases/) page.
-
-Alternatively, you can build from source:
+Building the binary from source:
 
 1.  **Clone the repository:**
     ```bash
@@ -96,26 +94,26 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 | `CONFIG`         | `--config`                     | config file                                           | No                                     | `$HOME/.vault-backup.yaml`                              |
 | **Vault**         |                                |                                                       |                                        |                                                         |
 | `VAULT_ADDRESS`       | `-a`, `--vault-address`        | Vault server address                                  | No                                     | `http://localhost:8200`                                 |
-| `VAULT_NAMESPACE`  | `-n`, `--vault-namespace`      | Vault namespace                                       | No                                     | `""`                                                    |
-| `VAULT_TOKEN`      | `-t`, `--vault-token`          | Vault token                                           | Yes (if K8s auth not enabled)          | `""`                                                    |
+| `VAULT_NAMESPACE`  | `-n`, `--vault-namespace`      | Vault namespace to use                                       | No                                     | `""`                                                    |
+| `VAULT_TOKEN`      | `-t`, `--vault-token`          | Vault authentication token                                           | Yes (if K8s auth not enabled)          | `""`                                                    |
 | `VAULT_TIMEOUT`    | `--vault-timeout`              | Vault client timeout                                  | No                                     | `30s`                                                   |
 | `VAULT_CA_CERT`     | `--vault-ca-cert`              | Path to the Vault CA certificate file                 | No                                     | `""`                                                    |
 | `VAULT_K8S_AUTH_ENABLED`  | `--vault-k8s-auth-enabled`     | Enable Kubernetes authentication                      | Yes (if Vault token not set)           | `false`                                                 |
 | `VAULT_K8S_AUTH_PATH`     | `--vault-k8s-auth-path`        | Kubernetes auth mount path                            | No                                     | `kubernetes`                                            |
-| `VAULT_K8S_TOKEN_PATH`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `/var/run/secrets/kubernetes.io/serviceaccount/token` |
+| `VAULT_K8S_TOKEN_PATH`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `/var/run/secrets/kubernetes.io/<br>/serviceaccount/token` |
 | `VAULT_K8S_ROLE`         | `--vault-k8s-role`             | Kubernetes role for authentication                    | Yes (if K8s auth enabled)              | `""`                                                    |
 | **S3 Storage**    |                                |                                                       |                                        |                                                         |
 | `S3_ACCESS_KEY`     | `--s3-access-key`              | S3 access key                                         | Yes                                    | `""`                                                    |
 | `S3_SECRET_KEY`     | `--s3-secret-key`              | S3 secret key                                         | Yes                                    | `""`                                                    |
 | `S3_BUCKET`        | `--s3-bucket`                  | S3 bucket name                                        | Yes                                    | `""`                                                    |
-| `S3_REGION`        | `--s3-region`                  | S3 region                                             | No                                     | `us-east-1`                                             |
+| `S3_REGION`        | `--s3-region`                  | S3 bucket region                                             | No                                     | `us-east-1`                                             |
 | `S3_ENDPOINT`      | `--s3-endpoint`                | S3 endpoint URL (for S3-compatible storage)           | No                                     | `""`                                                    |
-| `S3_FILENAME`      | `--s3-filename`                | Specific S3 filename (used only for restore)          | No                                     | `""`                                                    |
+| `S3_FILENAME`      | `--s3-filename`                | File name of the backup that you want to restore from S3          | No                                     | `""`                                                    |
 | **Notifications** |                                |                                                       |                                        |                                                         |
 | `PUSHOVER_API_KEY`  | `--pushover-api-key`           | Pushover API key                                      | No (but requires user key if set)    | `""`                                                    |
 | `PUSHOVER_USER_KEY` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
 | **Restore**       |                                |                                                       |                                        |                                                         |
-| `FORCE`    | `-f`, `--force`                | Force restore operation (restore command only)        | No                                     | `false`                                                 |
+| `FORCE`    | `-f`, `--force`                | Pass force flag to vault restore        | No                                     | `false`                                                 |
 
 **Required Configuration:**
 
