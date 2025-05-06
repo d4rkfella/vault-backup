@@ -93,7 +93,7 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 
 | Variable          | Flag                           | Description                                           | Required                               | Default                                                 |
 | :---------------- | :----------------------------- | :---------------------------------------------------- | :------------------------------------- | :------------------------------------------------------ |
-| `cfgFile`         | `--config`                     | config file                                           | No                                     | `$HOME/.vault-backup.yaml`                              |
+| `CONFIG`         | `--config`                     | config file                                           | No                                     | `$HOME/.vault-backup.yaml`                              |
 | **Vault**         |                                |                                                       |                                        |                                                         |
 | `VAULT_ADDRESS`       | `-a`, `--vault-address`        | Vault server address                                  | No                                     | `http://localhost:8200`                                 |
 | `VAULT_NAMESPACE`  | `-n`, `--vault-namespace`      | Vault namespace                                       | No                                     | `""`                                                    |
