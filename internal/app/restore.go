@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client, notifyClient NotifyClient, filename string) error {
+func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client, notifyClient NotifyClient) error {
 	startTime := time.Now()
 	var restoreErr error
 	var backupFilename string
@@ -33,29 +33,14 @@ func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client, no
 		}
 	}()
 
-	if filename == "" {
-		fmt.Println("No specific backup file provided, searching for the latest snapshot...")
-		latestBackup, err := s3Client.FindLatestSnapshotKey(ctx)
-		if err != nil {
-			restoreErr = fmt.Errorf("failed to find latest backup: %w", err)
-			return restoreErr
-		}
-		filename = latestBackup
-		fmt.Printf("Found latest backup file: %s\n", filename)
-	} else {
-		fmt.Printf("Attempting restore with specified file: %s\n", filename)
-		if exists, err := s3Client.HeadObject(ctx, filename); err != nil {
-			restoreErr = fmt.Errorf("failed to check for backup file %q: %w", filename, err)
-			fmt.Fprintf(os.Stderr, "Error: %v\n", restoreErr)
-			return restoreErr
-		} else if !exists {
-			restoreErr = fmt.Errorf("specified backup file %q not found", filename)
-			fmt.Fprintf(os.Stderr, "Error: %v\n", restoreErr)
-			return restoreErr
-		}
+	fmt.Println("Resolving backup key...")
+	resolvedKey, err := s3Client.ResolveBackupKey(ctx)
+	if err != nil {
+		restoreErr = fmt.Errorf("failed to resolve backup key: %w", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", restoreErr)
+		return restoreErr
 	}
-	backupFilename = filename
-
+	backupFilename = resolvedKey
 	fmt.Printf("Proceeding with restore using backup file: %s\n", backupFilename)
 
 	objReader, err := s3Client.GetObject(ctx, backupFilename)

@@ -24,7 +24,6 @@ type Config struct {
 	FileName     string
 	Timeout      time.Duration
 	CACert       string
-	RevokeToken  bool
 	// Kubernetes auth config
 	K8sAuthEnabled bool
 	K8sAuthPath    string
@@ -94,8 +93,4 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 		vaultClient:  &vaultAPIWrapper{client},
 		forceRestore: config.ForceRestore,
 	}, nil
-}
-
-func (c *Client) RevokeToken(ctx context.Context) error {
-	return c.vaultClient.Auth().Token().RevokeSelfWithContext(ctx, c.vaultClient.Token())
 }

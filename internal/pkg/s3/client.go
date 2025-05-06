@@ -2,7 +2,7 @@ package s3
 
 import (
 	"context"
-
+	"errors"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -25,6 +25,9 @@ type Client struct {
 }
 
 func NewClient(ctx context.Context, cfg *Config) (*Client, error) {
+	if cfg == nil {
+		return nil, errors.New("S3 client config cannot be nil")
+	}
 
 	creds := credentials.NewStaticCredentialsProvider(
 		cfg.AccessKey,

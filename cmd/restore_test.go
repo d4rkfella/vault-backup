@@ -19,26 +19,28 @@ func TestRestoreCommand_Success(t *testing.T) {
 	s3Bucket := "mock-bucket"
 	s3Region := "mock-region"
 	s3Filename := "backup-to-restore.snap"
+	s3AccessKey := "mock-access-key"
+	s3SecretKey := "mock-secret-key"
 
 	viper.Set("vault_address", vaultAddr)
 	viper.Set("vault_token", vaultToken)
 	viper.Set("s3_bucket", s3Bucket)
 	viper.Set("s3_region", s3Region)
 	viper.Set("s3_filename", s3Filename)
+	viper.Set("s3_access_key", s3AccessKey)
+	viper.Set("s3_secret_key", s3SecretKey)
 
 	var receivedVaultClient app.VaultClient
 	var receivedS3Client app.S3Client
 	var receivedNotifyClient app.NotifyClient
-	var receivedFilename string
 	mockRestoreCalled := false
 
 	originalRunRestore := runRestore
-	runRestore = func(ctx context.Context, vc app.VaultClient, sc app.S3Client, nc app.NotifyClient, filename string) error {
+	runRestore = func(ctx context.Context, vc app.VaultClient, sc app.S3Client, nc app.NotifyClient) error {
 		mockRestoreCalled = true
 		receivedVaultClient = vc
 		receivedS3Client = sc
 		receivedNotifyClient = nc
-		receivedFilename = filename
 		return nil
 	}
 	defer func() { runRestore = originalRunRestore }()
@@ -50,7 +52,6 @@ func TestRestoreCommand_Success(t *testing.T) {
 	assert.NotNil(t, receivedVaultClient, "Vault client passed to app.Restore was nil")
 	assert.NotNil(t, receivedS3Client, "S3 client passed to app.Restore was nil")
 	assert.Nil(t, receivedNotifyClient, "Notify client passed to app.Restore should be nil")
-	assert.Equal(t, s3Filename, receivedFilename, "S3 filename mismatch")
 }
 
 func TestRestoreCommand_AppFailure(t *testing.T) {
@@ -58,19 +59,23 @@ func TestRestoreCommand_AppFailure(t *testing.T) {
 
 	vaultToken := "mock-token"
 	s3Bucket := "mock-bucket"
+	s3AccessKey := "mock-access-key"
+	s3SecretKey := "mock-secret-key"
+
 	viper.Set("vault_token", vaultToken)
 	viper.Set("s3_bucket", s3Bucket)
+	viper.Set("s3_access_key", s3AccessKey)
+	viper.Set("s3_secret_key", s3SecretKey)
 
 	expectedError := errors.New("restore failed in app layer")
 	originalRunRestore := runRestore
-	runRestore = func(ctx context.Context, vc app.VaultClient, sc app.S3Client, nc app.NotifyClient, filename string) error {
+	runRestore = func(ctx context.Context, vc app.VaultClient, sc app.S3Client, nc app.NotifyClient) error {
 		return expectedError
 	}
 	defer func() { runRestore = originalRunRestore }()
 
-	output, err := executeCommand(rootCmd, "restore")
+	_, err := executeCommand(rootCmd, "restore")
 
 	require.Error(t, err, "Command should have returned an error")
 	assert.ErrorIs(t, err, expectedError, "Expected error from app layer to be returned")
-	assert.Contains(t, output, expectedError.Error(), "Expected error message not found in output")
 }

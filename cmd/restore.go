@@ -18,6 +18,13 @@ var runRestore = app.Restore
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Restore a vault backup from raft snapshot",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if verr := validateConfig(); verr != nil {
+			cmd.Println()
+			verr.Exit()
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
@@ -44,11 +51,11 @@ var restoreCmd = &cobra.Command{
 			FileName:        viper.GetString("s3_filename"),
 		}
 
-		var notifyCfg *pushover.Config
-		pkey := viper.GetString("notify_pushover_api_key")
-		ukey := viper.GetString("notify_pushover_user_key")
+		var pushoverCfg *pushover.Config
+		pkey := viper.GetString("pushover_api_key")
+		ukey := viper.GetString("pushover_user_key")
 		if pkey != "" && ukey != "" {
-			notifyCfg = &pushover.Config{
+			pushoverCfg = &pushover.Config{
 				APIKey:  pkey,
 				UserKey: ukey,
 			}
@@ -64,16 +71,16 @@ var restoreCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize s3 client: %w", err)
 		}
 
-		var appNotifyClient app.NotifyClient
-		if notifyCfg != nil {
-			appNotifyClient = pushover.NewClient(notifyCfg)
+		var pushoverClient *pushover.Client
+		if pushoverCfg != nil {
+			pushoverClient = pushover.NewClient(pushoverCfg)
 		}
 
 		if forceRestore {
 			fmt.Println("Force restore option enabled.")
 		}
 
-		return runRestore(ctx, vaultClient, s3Client, appNotifyClient, s3Cfg.FileName)
+		return runRestore(ctx, vaultClient, s3Client, pushoverClient)
 	},
 }
 

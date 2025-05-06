@@ -95,7 +95,7 @@ func parseSHA256SUMS(content []byte) map[string]string {
 	return sums
 }
 
-func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client, notifyClient NotifyClient, revokeToken bool) error {
+func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client, notifyClient NotifyClient) error {
 	startTime := time.Now()
 	fileName := fmt.Sprintf("backup-%s.%s", startTime.Format(TIME_LAYOUT), SNAPSHOT_EXTENSION)
 	var snapshotSize int64
@@ -116,18 +116,6 @@ func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client, not
 			); notifyErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to send notification: %v\n", notifyErr)
 			}
-		}
-
-		if revokeToken {
-			fmt.Printf("DEBUG: In app/backup.go defer, attempting token revocation (revokeToken=%t)\n", revokeToken)
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			if revokeErr := vaultClient.RevokeToken(cleanupCtx); revokeErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to revoke vault token: %v\n", revokeErr)
-			}
-		} else {
-			fmt.Printf("DEBUG: In app/backup.go defer, skipping token revocation (revokeToken=%t)\n", revokeToken)
 		}
 	}()
 

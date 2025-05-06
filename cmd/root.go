@@ -36,9 +36,11 @@ var (
 var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:     "vault-backup",
-	Short:   "vault-backup is a CLI tool to backup and restore Vault data using raft snapshots.",
-	Version: version,
+	Use:           "vault-backup",
+	Short:         "vault-backup is a CLI tool to backup and restore Vault data using raft snapshots.",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	Version:       version,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := cmd.Help(); err != nil {
 			fmt.Fprintf(os.Stderr, "error displaying help: %v\n", err)
@@ -76,6 +78,11 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVar(&pushoverAPIKey, "pushover-api-key", "", "Pushover API key")
 	rootCmd.PersistentFlags().StringVar(&pushoverUserKey, "pushover-user-key", "", "Pushover user key")
+
+	err := rootCmd.MarkPersistentFlagRequired("s3-access-key")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marking flag as required: %v\n", err)
+	}
 
 	bindFlags(rootCmd)
 }

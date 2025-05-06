@@ -11,13 +11,18 @@ import (
 	"github.com/spf13/viper"
 )
 
-var revokeToken bool
-
 var runBackup = app.Backup
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Perform a vault backup and stores it as raft snapshot",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if verr := validateConfig(); verr != nil {
+			cmd.Println()
+			verr.Exit()
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
@@ -26,7 +31,6 @@ var backupCmd = &cobra.Command{
 			Token:          viper.GetString("vault_token"),
 			Namespace:      viper.GetString("vault_namespace"),
 			Timeout:        viper.GetDuration("vault_timeout"),
-			RevokeToken:    revokeToken,
 			K8sAuthEnabled: viper.GetBool("vault_k8s_auth_enabled"),
 			K8sAuthPath:    viper.GetString("vault_k8s_auth_path"),
 			K8sTokenPath:   viper.GetString("vault_k8s_token_path"),
@@ -43,11 +47,11 @@ var backupCmd = &cobra.Command{
 			SessionToken:    viper.GetString("s3_session_token"),
 		}
 
-		var notifyCfg *pushover.Config
-		pkey := viper.GetString("notify_pushover_api_key")
-		ukey := viper.GetString("notify_pushover_user_key")
+		var pushoverCfg *pushover.Config
+		pkey := viper.GetString("pushover_api_key")
+		ukey := viper.GetString("pushover_user_key")
 		if pkey != "" && ukey != "" {
-			notifyCfg = &pushover.Config{
+			pushoverCfg = &pushover.Config{
 				APIKey:  pkey,
 				UserKey: ukey,
 			}
@@ -63,17 +67,15 @@ var backupCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize s3 client: %w", err)
 		}
 
-		var appNotifyClient app.NotifyClient
-		if notifyCfg != nil {
-			appNotifyClient = pushover.NewClient(notifyCfg)
+		var pushoverClient *pushover.Client
+		if pushoverCfg != nil {
+			pushoverClient = pushover.NewClient(pushoverCfg)
 		}
 
-		return runBackup(ctx, vaultClient, s3Client, appNotifyClient, vaultCfg.RevokeToken)
+		return runBackup(ctx, vaultClient, s3Client, pushoverClient)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(backupCmd)
-
-	backupCmd.Flags().BoolVar(&revokeToken, "revoke-token", false, "Revoke the vault token after backup completes")
 }

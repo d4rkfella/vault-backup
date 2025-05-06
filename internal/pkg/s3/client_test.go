@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -19,8 +21,6 @@ import (
 type mockS3API struct {
 	mock.Mock
 }
-
-var _ s3API = (*mockS3API)(nil)
 
 func (m *mockS3API) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	args := m.Called(ctx, params)
@@ -34,15 +34,15 @@ func (m *mockS3API) GetObject(ctx context.Context, params *s3.GetObjectInput, op
 	return output, args.Error(1)
 }
 
-func (m *mockS3API) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	args := m.Called(ctx, params)
-	output, _ := args.Get(0).(*s3.HeadObjectOutput)
-	return output, args.Error(1)
-}
-
 func (m *mockS3API) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	args := m.Called(ctx, params)
 	output, _ := args.Get(0).(*s3.ListObjectsV2Output)
+	return output, args.Error(1)
+}
+
+func (m *mockS3API) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	args := m.Called(ctx, params)
+	output, _ := args.Get(0).(*s3.HeadObjectOutput)
 	return output, args.Error(1)
 }
 
@@ -135,96 +135,173 @@ func TestGetObject_Failure(t *testing.T) {
 	mockAPI.AssertExpectations(t)
 }
 
-func TestHeadObject_Success(t *testing.T) {
+func TestNewClient(t *testing.T) {
+	ctx := context.Background()
+	cfg := &Config{
+		Region: "us-east-1",
+		Bucket: "test-bucket",
+	}
+
+	client, err := NewClient(ctx, cfg)
+
+	if err != nil {
+		t.Logf("NewClient failed as expected (likely missing credentials): %v", err)
+		assert.Nil(t, client, "Client should be nil when NewClient fails")
+	} else {
+		t.Logf("NewClient succeeded (credentials might be present in environment)")
+		require.NotNil(t, client, "Client is nil despite NewClient succeeding")
+		assert.NotNil(t, client.s3Client, "Client s3Client field is nil after successful NewClient")
+		assert.Equal(t, cfg, client.config, "Client config field does not match input after successful NewClient")
+	}
+}
+
+// --- Tests for ResolveBackupKey ---
+
+func TestResolveBackupKey_ConfiguredFileExists(t *testing.T) {
 	ctx := context.Background()
 	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
+	cfgFilename := "backup-from-config.snap"
+	cfg := &Config{Bucket: "test-bucket", FileName: cfgFilename}
 	client := &Client{s3Client: mockAPI, config: cfg}
-	key := "test-key-head"
 
 	mockAPI.On("HeadObject", ctx, mock.MatchedBy(func(input *s3.HeadObjectInput) bool {
-		return *input.Bucket == cfg.Bucket && *input.Key == key
+		return *input.Bucket == cfg.Bucket && *input.Key == cfgFilename
 	})).Return(&s3.HeadObjectOutput{}, nil).Once()
 
-	exists, err := client.HeadObject(ctx, key)
+	key, err := client.ResolveBackupKey(ctx)
 
 	require.NoError(t, err)
-	assert.True(t, exists)
+	assert.Equal(t, cfgFilename, key)
 	mockAPI.AssertExpectations(t)
 }
 
-func TestHeadObject_NotFound(t *testing.T) {
+func TestResolveBackupKey_ConfiguredFileDoesNotExist(t *testing.T) {
 	ctx := context.Background()
 	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
+	cfgFilename := "non-existent-backup.snap"
+	cfg := &Config{Bucket: "test-bucket", FileName: cfgFilename}
 	client := &Client{s3Client: mockAPI, config: cfg}
-	key := "test-key-head-notfound"
-	var notFoundErr *types.NoSuchKey
+
+	// Simulate AWS SDK returning a "NotFound" error
+	mockAPI.On("HeadObject", ctx, mock.MatchedBy(func(input *s3.HeadObjectInput) bool {
+		return *input.Bucket == cfg.Bucket && *input.Key == cfgFilename
+	})).Return(nil, &smithy.GenericAPIError{Code: "NotFound", Message: "Not Found"}).Once()
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.Error(t, err)
+	// Check the specific error returned by ResolveBackupKey when HeadObject returns NotFound
+	expectedErrStr := fmt.Sprintf("%s: %q", ErrNoBackupFilesFound.Error(), cfgFilename)
+	assert.EqualError(t, err, expectedErrStr) // Use EqualError for exact match
+	assert.Empty(t, key)
+	mockAPI.AssertExpectations(t)
+}
+
+func TestResolveBackupKey_ConfiguredFileHeadError(t *testing.T) {
+	ctx := context.Background()
+	mockAPI := new(mockS3API)
+	cfgFilename := "error-checking-backup.snap"
+	cfg := &Config{Bucket: "test-bucket", FileName: cfgFilename}
+	client := &Client{s3Client: mockAPI, config: cfg}
+	expectedError := errors.New("some S3 permission error")
 
 	mockAPI.On("HeadObject", ctx, mock.MatchedBy(func(input *s3.HeadObjectInput) bool {
-		return *input.Bucket == cfg.Bucket && *input.Key == key
-	})).Return(nil, notFoundErr).Once()
+		return *input.Bucket == cfg.Bucket && *input.Key == cfgFilename
+	})).Return(nil, expectedError).Once()
 
-	exists, err := client.HeadObject(ctx, key)
-
-	require.NoError(t, err)
-	assert.False(t, exists)
-	mockAPI.AssertExpectations(t)
-}
-
-func TestHeadObject_OtherFailure(t *testing.T) {
-	ctx := context.Background()
-	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
-	client := &Client{s3Client: mockAPI, config: cfg}
-	key := "test-key-head-fail"
-	expectedError := errors.New("s3 head failed")
-
-	mockAPI.On("HeadObject", ctx, mock.AnythingOfType("*s3.HeadObjectInput")).Return(nil, expectedError).Once()
-
-	exists, err := client.HeadObject(ctx, key)
+	key, err := client.ResolveBackupKey(ctx)
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, expectedError.Error())
-	assert.False(t, exists)
+	assert.ErrorContains(t, err, "failed to check S3 object")
+	assert.Empty(t, key)
 	mockAPI.AssertExpectations(t)
 }
 
-func TestFindLatestSnapshotKey_Success_SinglePage(t *testing.T) {
+func TestResolveBackupKey_NoConfiguredFileFindLatest(t *testing.T) {
 	ctx := context.Background()
 	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
+	cfg := &Config{Bucket: "test-bucket", FileName: ""} // No filename configured
 	client := &Client{s3Client: mockAPI, config: cfg}
 
 	now := time.Now()
-	expectedKey := "backup-3.snap"
-
+	expectedKey := "latest-backup.snap"
 	mockOutput := &s3.ListObjectsV2Output{
 		Contents: []types.Object{
-			{Key: aws.String("backup-1.snap"), LastModified: aws.Time(now.Add(-2 * time.Hour))},
-			{Key: aws.String("other-file.txt"), LastModified: aws.Time(now.Add(-1 * time.Hour))},
+			{Key: aws.String("older-backup.snap"), LastModified: aws.Time(now.Add(-1 * time.Hour))},
 			{Key: aws.String(expectedKey), LastModified: aws.Time(now)},
-			{Key: aws.String("backup-2.snap"), LastModified: aws.Time(now.Add(-3 * time.Hour))},
 		},
-		IsTruncated:           aws.Bool(false),
-		NextContinuationToken: nil,
+		IsTruncated: aws.Bool(false),
 	}
 
 	mockAPI.On("ListObjectsV2", ctx, mock.MatchedBy(func(input *s3.ListObjectsV2Input) bool {
 		return *input.Bucket == cfg.Bucket && input.ContinuationToken == nil
 	})).Return(mockOutput, nil).Once()
 
-	latestKey, err := client.FindLatestSnapshotKey(ctx)
+	key, err := client.ResolveBackupKey(ctx)
 
 	require.NoError(t, err)
-	assert.Equal(t, expectedKey, latestKey)
+	assert.Equal(t, expectedKey, key)
 	mockAPI.AssertExpectations(t)
 }
 
-func TestFindLatestSnapshotKey_Success_MultiPage(t *testing.T) {
+func TestResolveBackupKey_NoConfiguredFileNoSnapshotsFound(t *testing.T) {
 	ctx := context.Background()
 	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
+	cfg := &Config{Bucket: "test-bucket", FileName: ""}
+	client := &Client{s3Client: mockAPI, config: cfg}
+
+	mockOutput := &s3.ListObjectsV2Output{
+		Contents: []types.Object{
+			{Key: aws.String("some-other-file.txt"), LastModified: aws.Time(time.Now())},
+		},
+		IsTruncated: aws.Bool(false),
+	}
+
+	mockAPI.On("ListObjectsV2", ctx, mock.AnythingOfType("*s3.ListObjectsV2Input")).Return(mockOutput, nil).Once()
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoBackupFilesFound)
+	assert.Empty(t, key)
+	mockAPI.AssertExpectations(t)
+}
+
+func TestResolveBackupKey_NoConfiguredFileListError(t *testing.T) {
+	ctx := context.Background()
+	mockAPI := new(mockS3API)
+	cfg := &Config{Bucket: "test-bucket", FileName: ""}
+	client := &Client{s3Client: mockAPI, config: cfg}
+	expectedError := errors.New("failed listing bucket")
+
+	mockAPI.On("ListObjectsV2", ctx, mock.AnythingOfType("*s3.ListObjectsV2Input")).Return(nil, expectedError).Once()
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, expectedError.Error())
+	assert.ErrorContains(t, err, "failed to list S3 objects")
+	assert.Empty(t, key)
+	mockAPI.AssertExpectations(t)
+}
+
+func TestResolveBackupKey_NilConfig(t *testing.T) {
+	ctx := context.Background()
+	// Create client with nil config intentionally
+	client := &Client{s3Client: new(mockS3API), config: nil}
+
+	key, err := client.ResolveBackupKey(ctx)
+
+	require.Error(t, err)
+	assert.EqualError(t, err, "S3 client config is nil")
+	assert.Empty(t, key)
+}
+
+func TestResolveBackupKey_NoConfiguredFileFindLatest_MultiPage(t *testing.T) {
+	ctx := context.Background()
+	mockAPI := new(mockS3API)
+	cfg := &Config{Bucket: "test-bucket", FileName: ""}
 	client := &Client{s3Client: mockAPI, config: cfg}
 
 	now := time.Now()
@@ -233,7 +310,9 @@ func TestFindLatestSnapshotKey_Success_MultiPage(t *testing.T) {
 	mockOutput1 := &s3.ListObjectsV2Output{
 		Contents: []types.Object{
 			{Key: aws.String("backup-page1-a.snap"), LastModified: aws.Time(now.Add(-5 * time.Hour))},
-			{Key: aws.String("backup-page1-b.snap"), LastModified: aws.Time(now.Add(-4 * time.Hour))},
+			// Test handling nil key/time
+			{Key: nil, LastModified: aws.Time(now.Add(-4 * time.Hour))},
+			{Key: aws.String("backup-page1-b.snap"), LastModified: nil},
 		},
 		IsTruncated:           aws.Bool(true),
 		NextContinuationToken: aws.String("token1"),
@@ -256,93 +335,37 @@ func TestFindLatestSnapshotKey_Success_MultiPage(t *testing.T) {
 		return *input.Bucket == cfg.Bucket && input.ContinuationToken != nil && *input.ContinuationToken == "token1"
 	})).Return(mockOutput2, nil).Once()
 
-	latestKey, err := client.FindLatestSnapshotKey(ctx)
+	key, err := client.ResolveBackupKey(ctx)
 
 	require.NoError(t, err)
-	assert.Equal(t, expectedKey, latestKey)
+	assert.Equal(t, expectedKey, key)
 	mockAPI.AssertExpectations(t)
 }
 
-func TestFindLatestSnapshotKey_NoSnapshotsFound(t *testing.T) {
+func TestResolveBackupKey_ConfiguredFileHead_NonApiError(t *testing.T) {
 	ctx := context.Background()
 	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
+	cfgFilename := "error-checking-backup.snap"
+	cfg := &Config{Bucket: "test-bucket", FileName: cfgFilename}
 	client := &Client{s3Client: mockAPI, config: cfg}
+	expectedError := context.DeadlineExceeded // Simulate a context error
 
-	mockOutput := &s3.ListObjectsV2Output{
-		Contents: []types.Object{
-			{Key: aws.String("file1.txt"), LastModified: aws.Time(time.Now())},
-			{Key: aws.String("image.jpg"), LastModified: aws.Time(time.Now())},
-		},
-		IsTruncated:           aws.Bool(false),
-		NextContinuationToken: nil,
-	}
+	mockAPI.On("HeadObject", ctx, mock.MatchedBy(func(input *s3.HeadObjectInput) bool {
+		return *input.Bucket == cfg.Bucket && *input.Key == cfgFilename
+	})).Return(nil, expectedError).Once()
 
-	mockAPI.On("ListObjectsV2", ctx, mock.AnythingOfType("*s3.ListObjectsV2Input")).Return(mockOutput, nil).Once()
-
-	latestKey, err := client.FindLatestSnapshotKey(ctx)
+	key, err := client.ResolveBackupKey(ctx)
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNoBackupFilesFound)
-	assert.Empty(t, latestKey)
+	assert.ErrorIs(t, err, expectedError)
+	assert.ErrorContains(t, err, "failed to check S3 object")
+	assert.Empty(t, key)
 	mockAPI.AssertExpectations(t)
 }
 
-func TestFindLatestSnapshotKey_EmptyBucket(t *testing.T) {
-	ctx := context.Background()
-	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
-	client := &Client{s3Client: mockAPI, config: cfg}
-
-	mockOutput := &s3.ListObjectsV2Output{
-		Contents:              []types.Object{},
-		IsTruncated:           aws.Bool(false),
-		NextContinuationToken: nil,
-	}
-
-	mockAPI.On("ListObjectsV2", ctx, mock.AnythingOfType("*s3.ListObjectsV2Input")).Return(mockOutput, nil).Once()
-
-	latestKey, err := client.FindLatestSnapshotKey(ctx)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNoBackupFilesFound)
-	assert.Empty(t, latestKey)
-	mockAPI.AssertExpectations(t)
-}
-
-func TestFindLatestSnapshotKey_ListError(t *testing.T) {
-	ctx := context.Background()
-	mockAPI := new(mockS3API)
-	cfg := &Config{Bucket: "test-bucket"}
-	client := &Client{s3Client: mockAPI, config: cfg}
-	expectedError := errors.New("s3 list objects failed")
-
-	mockAPI.On("ListObjectsV2", ctx, mock.AnythingOfType("*s3.ListObjectsV2Input")).Return(nil, expectedError).Once()
-
-	latestKey, err := client.FindLatestSnapshotKey(ctx)
-
-	require.Error(t, err)
-	assert.ErrorContains(t, err, expectedError.Error())
-	assert.Empty(t, latestKey)
-	mockAPI.AssertExpectations(t)
-}
-
-func TestNewClient(t *testing.T) {
-	ctx := context.Background()
-	cfg := &Config{
-		Region: "us-east-1",
-		Bucket: "test-bucket",
-	}
-
-	client, err := NewClient(ctx, cfg)
-
-	if err != nil {
-		t.Logf("NewClient failed as expected (likely missing credentials): %v", err)
-		assert.Nil(t, client, "Client should be nil when NewClient fails")
-	} else {
-		t.Logf("NewClient succeeded (credentials might be present in environment)")
-		require.NotNil(t, client, "Client is nil despite NewClient succeeding")
-		assert.NotNil(t, client.s3Client, "Client s3Client field is nil after successful NewClient")
-		assert.Equal(t, cfg, client.config, "Client config field does not match input after successful NewClient")
-	}
+// Add test for nil config case
+func TestNewClient_NilConfig(t *testing.T) {
+	_, err := NewClient(context.Background(), nil)
+	assert.Error(t, err)
+	assert.EqualError(t, err, "S3 client config cannot be nil")
 }

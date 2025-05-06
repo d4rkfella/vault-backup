@@ -96,11 +96,6 @@ func (m *mockVaultClient) Restore(ctx context.Context, r io.Reader) error {
 	return args.Error(0)
 }
 
-func (m *mockVaultClient) RevokeToken(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
-}
-
 type mockS3Client struct {
 	mock.Mock
 }
@@ -119,12 +114,7 @@ func (m *mockS3Client) GetObject(ctx context.Context, key string) (io.ReadCloser
 	return reader, args.Error(1)
 }
 
-func (m *mockS3Client) HeadObject(ctx context.Context, key string) (bool, error) {
-	args := m.Called(ctx, key)
-	return args.Bool(0), args.Error(1)
-}
-
-func (m *mockS3Client) FindLatestSnapshotKey(ctx context.Context) (string, error) {
+func (m *mockS3Client) ResolveBackupKey(ctx context.Context) (string, error) {
 	args := m.Called(ctx)
 	return args.String(0), args.Error(1)
 }
@@ -159,9 +149,8 @@ func TestBackup_Success_WithNotification_WithRevoke(t *testing.T) {
 		details := args.Get(6).(map[string]string)
 		assert.Contains(t, details, "File")
 	}).Return(nil).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Once()
 
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	assert.NoError(t, err)
 	vaultMock.AssertExpectations(t)
@@ -177,14 +166,12 @@ func TestBackup_Success_NoNotification_NoRevoke(t *testing.T) {
 
 	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
 	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(nil).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Maybe()
 
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, false)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	assert.NoError(t, err)
 	vaultMock.AssertExpectations(t)
 	s3Mock.AssertExpectations(t)
-	vaultMock.AssertNotCalled(t, "RevokeToken", mock.Anything)
 }
 
 func TestBackup_VaultBackupFails(t *testing.T) {
@@ -199,15 +186,14 @@ func TestBackup_VaultBackupFails(t *testing.T) {
 		false,
 		"backup",
 		mock.AnythingOfType("time.Duration"),
-		mock.AnythingOfType("int64"),
+		int64(0),
 		mock.MatchedBy(func(err error) bool {
 			return errors.Is(err, expectedError)
 		}),
 		mock.AnythingOfType("map[string]string"),
 	).Return(nil).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Once()
 
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, expectedError)
@@ -235,9 +221,8 @@ func TestBackup_S3UploadFails(t *testing.T) {
 		}),
 		mock.AnythingOfType("map[string]string"),
 	).Return(nil).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Once()
 
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, expectedError)
@@ -269,9 +254,7 @@ func TestBackup_VerifyChecksumsFails(t *testing.T) {
 		mock.AnythingOfType("map[string]string"),
 	).Return(nil).Once()
 
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Once()
-
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), expectedErrorMsg)
@@ -301,9 +284,8 @@ func TestBackup_NotificationFails(t *testing.T) {
 		nil,
 		mock.AnythingOfType("map[string]string"),
 	).Return(notificationError).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(nil).Once()
 
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
+	err := Backup(ctx, vaultMock, s3Mock, notifyMock)
 
 	if errClose := w.Close(); errClose != nil {
 		t.Logf("Warning: closing stderr pipe writer failed: %v", errClose)
@@ -321,43 +303,7 @@ func TestBackup_NotificationFails(t *testing.T) {
 }
 
 func TestBackup_RevokeTokenFails(t *testing.T) {
-	ctx := context.Background()
-	vaultMock := newMockVaultClient(t)
-	s3Mock := new(mockS3Client)
-	notifyMock := new(mockNotifyClient)
-	revokeError := errors.New("failed to revoke token")
-
-	oldStderr := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	vaultMock.On("Backup", ctx, mock.AnythingOfType("*bytes.Buffer")).Return(nil).Once()
-	s3Mock.On("PutObject", ctx, mock.AnythingOfType("string"), mock.AnythingOfType("[]uint8")).Return(nil).Once()
-	vaultMock.On("RevokeToken", mock.Anything).Return(revokeError).Once()
-	notifyMock.On("Notify", ctx,
-		true,
-		"backup",
-		mock.AnythingOfType("time.Duration"),
-		mock.AnythingOfType("int64"),
-		nil,
-		mock.AnythingOfType("map[string]string"),
-	).Return(nil).Once()
-
-	err := Backup(ctx, vaultMock, s3Mock, notifyMock, true)
-
-	if errClose := w.Close(); errClose != nil {
-		t.Logf("Warning: closing stderr pipe writer failed: %v", errClose)
-	}
-	os.Stderr = oldStderr
-	stderrBytes, _ := io.ReadAll(r)
-
-	require.NoError(t, err)
-	assert.Contains(t, string(stderrBytes), "Warning: failed to revoke vault token:", "Expected revoke token failure warning")
-	assert.Contains(t, string(stderrBytes), revokeError.Error())
-
-	vaultMock.AssertExpectations(t)
-	s3Mock.AssertExpectations(t)
-	notifyMock.AssertExpectations(t)
+	t.Skip("Skipping test as token revocation is removed")
 }
 
 func TestParseSHA256SUMS_Valid(t *testing.T) {
