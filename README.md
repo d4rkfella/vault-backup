@@ -100,7 +100,7 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 | `VAULT_CA_CERT`     | `--vault-ca-cert`              | Path to the Vault CA certificate file                 | No                                     | `""`                                                    |
 | `VAULT_K8S_AUTH_ENABLED`  | `--vault-k8s-auth-enabled`     | Enable Kubernetes authentication                      | Yes (if Vault token not set)           | `false`                                                 |
 | `VAULT_K8S_AUTH_PATH`     | `--vault-k8s-auth-path`        | Kubernetes auth mount path                            | No                                     | `kubernetes`                                            |
-| `VAULT_K8S_TOKEN_PATH`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `/var/run/secrets/kubernetes.io/<br>/serviceaccount/token` |
+| `VAULT_K8S_TOKEN_PATH`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `(See Note 1)`                                          |
 | `VAULT_K8S_ROLE`         | `--vault-k8s-role`             | Kubernetes role for authentication                    | Yes (if K8s auth enabled)              | `""`                                                    |
 | **S3 Storage**    |                                |                                                       |                                        |                                                         |
 | `S3_ACCESS_KEY`     | `--s3-access-key`              | S3 access key                                         | Yes                                    | `""`                                                    |
@@ -114,6 +114,10 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 | `PUSHOVER_USER_KEY` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
 | **Restore**       |                                |                                                       |                                        |                                                         |
 | `FORCE`    | `-f`, `--force`                | Pass force flag to vault restore        | No                                     | `false`                                                 |
+
+**Notes:**
+
+1.  The default value for `--vault-k8s-token-path` is `/var/run/secrets/kubernetes.io/serviceaccount/token`.
 
 **Required Configuration:**
 
