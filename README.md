@@ -122,18 +122,6 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 *   S3 Access Key, Secret Key, and Bucket Name must always be provided.
 *   Either a Vault Token OR Kubernetes Authentication (Enabled + Role) must be provided.
 
-## Development
-
-*(Add details about setting up a development environment, running tests, etc.)*
-
-```bash
-go test ./...
-```
-
-## Contributing
-
-*(Add contribution guidelines if desired.)*
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
