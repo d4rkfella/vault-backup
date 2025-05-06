@@ -13,7 +13,7 @@
 
 ## Installation
 
-*(Add instructions here if you plan to distribute binaries, e.g., via GitHub Releases or a package manager.)*
+You can download pre-built binaries for your operating system from the [GitHub Releases](https://github.com/d4rkfella/vault-backup/releases/) page.
 
 Alternatively, you can build from source:
 
@@ -91,29 +91,31 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 
 ### Configuration Options
 
-| Flag                       | Environment Variable         | Config Key               | Default                                                 | Description                                                                 |
-| :------------------------- | :--------------------------- | :----------------------- | :------------------------------------------------------ | :-------------------------------------------------------------------------- |
-| `--config`                 | `CONFIG`                     | `config`                 | `""`                                                     | Path to the configuration file.                                               |
-| **Vault**                  |                              |                          |                                                         |                                                                             |
-| `-a`, `--vault-address`    | `VAULT_ADDRESS`              | `vault_address`          | `http://localhost:8200`                                 | Vault server address.                                                       |
-| `-n`, `--vault-namespace`  | `VAULT_NAMESPACE`            | `vault_namespace`        | `""`                                                     | Vault namespace (if used).                                                  |
-| `-t`, `--vault-token`      | `VAULT_TOKEN`                | `vault_token`            | `""`                                                     | Vault token for authentication. **Required** if K8s auth is not enabled.    |
-| `--vault-timeout`          | `VAULT_TIMEOUT`              | `vault_timeout`          | `30s`                                                   | Timeout for Vault client operations.                                        |
-| `--vault-ca-cert`          | `VAULT_CA_CERT`              | `vault_ca_cert`          | `""`                                                     | Path to a custom CA certificate file for Vault connection.                  |
-| `--vault-k8s-auth-enabled` | `VAULT_K8S_AUTH_ENABLED`     | `vault_k8s_auth_enabled` | `false`                                                 | Enable Kubernetes authentication. **Required** if Vault token is not set. |
-| `--vault-k8s-auth-path`    | `VAULT_K8S_AUTH_PATH`        | `vault_k8s_auth_path`    | `kubernetes`                                            | Mount path for the Kubernetes auth method in Vault.                       |
-| `--vault-k8s-token-path`   | `VAULT_K8S_TOKEN_PATH`       | `vault_k8s_token_path`   | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Path to the Kubernetes service account token file inside the pod.           |
-| `--vault-k8s-role`         | `VAULT_K8S_ROLE`             | `vault_k8s_role`         | `""`                                                     | Vault role to use for Kubernetes authentication. **Required** if K8s enabled. |
-| **S3 Storage**             |                              |                          |                                                         |                                                                             |
-| `--s3-access-key`          | `S3_ACCESS_KEY`              | `s3_access_key`          | `""`                                                     | S3 access key. **Required**.                                                |
-| `--s3-secret-key`          | `S3_SECRET_KEY`              | `s3_secret_key`          | `""`                                                     | S3 secret key. **Required**.                                                |
-| `--s3-bucket`              | `S3_BUCKET`                  | `s3_bucket`              | `""`                                                     | S3 bucket name. **Required**.                                               |
-| `--s3-region`              | `S3_REGION`                  | `s3_region`              | `us-east-1`                                             | S3 region.                                                                  |
-| `--s3-endpoint`            | `S3_ENDPOINT`                | `s3_endpoint`            | `""`                                                     | Custom S3 endpoint URL (for S3-compatible storage like MinIO).            |
-| `--s3-filename`            | `S3_FILENAME`                | `s3_filename`            | `""`                                                     | Specific S3 filename to restore (optional, defaults to latest `.snap`).   |
-| **Notifications**          |                              |                          |                                                         |                                                                             |
-| `--pushover-api-key`       | `PUSHOVER_API_KEY`           | `pushover_api_key`       | `""`                                                     | Pushover application API key/token. (Optional, requires user key too).    |
-| `--pushover-user-key`      | `PUSHOVER_USER_KEY`          | `pushover_user_key`      | `""`                                                     | Pushover user/group key. (Optional, requires API key too).              |
+| Variable          | Flag                           | Description                                           | Required                               | Default                                                 |
+| :---------------- | :----------------------------- | :---------------------------------------------------- | :------------------------------------- | :------------------------------------------------------ |
+| `cfgFile`         | `--config`                     | config file                                           | No                                     | `$HOME/.vault-backup.yaml`                              |
+| **Vault**         |                                |                                                       |                                        |                                                         |
+| `vaultAddr`       | `-a`, `--vault-address`        | Vault server address                                  | No                                     | `http://localhost:8200`                                 |
+| `vaultNamespace`  | `-n`, `--vault-namespace`      | Vault namespace                                       | No                                     | `""`                                                    |
+| `vaultToken`      | `-t`, `--vault-token`          | Vault token                                           | Yes (if K8s auth not enabled)          | `""`                                                    |
+| `vaultTimeout`    | `--vault-timeout`              | Vault client timeout                                  | No                                     | `30s`                                                   |
+| `vaultCACert`     | `--vault-ca-cert`              | Path to the Vault CA certificate file                 | No                                     | `""`                                                    |
+| `k8sAuthEnabled`  | `--vault-k8s-auth-enabled`     | Enable Kubernetes authentication                      | Yes (if Vault token not set)           | `false`                                                 |
+| `k8sAuthPath`     | `--vault-k8s-auth-path`        | Kubernetes auth mount path                            | No                                     | `kubernetes`                                            |
+| `k8sTokenPath`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `/var/run/secrets/kubernetes.io/serviceaccount/token` |
+| `k8sRole`         | `--vault-k8s-role`             | Kubernetes role for authentication                    | Yes (if K8s auth enabled)              | `""`                                                    |
+| **S3 Storage**    |                                |                                                       |                                        |                                                         |
+| `s3AccessKey`     | `--s3-access-key`              | S3 access key                                         | Yes                                    | `""`                                                    |
+| `s3SecretKey`     | `--s3-secret-key`              | S3 secret key                                         | Yes                                    | `""`                                                    |
+| `s3Bucket`        | `--s3-bucket`                  | S3 bucket name                                        | Yes                                    | `""`                                                    |
+| `s3Region`        | `--s3-region`                  | S3 region                                             | No                                     | `us-east-1`                                             |
+| `s3Endpoint`      | `--s3-endpoint`                | S3 endpoint URL (for S3-compatible storage)           | No                                     | `""`                                                    |
+| `s3FileName`      | `--s3-filename`                | Specific S3 filename (used only for restore)          | No                                     | `""`                                                    |
+| **Notifications** |                                |                                                       |                                        |                                                         |
+| `pushoverAPIKey`  | `--pushover-api-key`           | Pushover API key                                      | No (but requires user key if set)    | `""`                                                    |
+| `pushoverUserKey` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
+| **Restore**       |                                |                                                       |                                        |                                                         |
+| `forceRestore`    | `-f`, `--force`                | Force restore operation (restore command only)        | No                                     | `false`                                                 |
 
 **Required Configuration:**
 
