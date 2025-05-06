@@ -17,7 +17,7 @@ Building the binary from source:
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/d4rkfella/vault-backup
     cd vault-backup
     ```
 2.  **Build the binary:**
