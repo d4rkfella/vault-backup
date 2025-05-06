@@ -105,17 +105,17 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 | `k8sTokenPath`    | `--vault-k8s-token-path`       | Kubernetes service account token mount path           | No                                     | `/var/run/secrets/kubernetes.io/serviceaccount/token` |
 | `k8sRole`         | `--vault-k8s-role`             | Kubernetes role for authentication                    | Yes (if K8s auth enabled)              | `""`                                                    |
 | **S3 Storage**    |                                |                                                       |                                        |                                                         |
-| `s3AccessKey`     | `--s3-access-key`              | S3 access key                                         | Yes                                    | `""`                                                    |
-| `s3SecretKey`     | `--s3-secret-key`              | S3 secret key                                         | Yes                                    | `""`                                                    |
-| `s3Bucket`        | `--s3-bucket`                  | S3 bucket name                                        | Yes                                    | `""`                                                    |
-| `s3Region`        | `--s3-region`                  | S3 region                                             | No                                     | `us-east-1`                                             |
-| `s3Endpoint`      | `--s3-endpoint`                | S3 endpoint URL (for S3-compatible storage)           | No                                     | `""`                                                    |
-| `s3FileName`      | `--s3-filename`                | Specific S3 filename (used only for restore)          | No                                     | `""`                                                    |
+| `S3_ACCESS_KEY`     | `--s3-access-key`              | S3 access key                                         | Yes                                    | `""`                                                    |
+| `S3_SECRET_KEY`     | `--s3-secret-key`              | S3 secret key                                         | Yes                                    | `""`                                                    |
+| `S3_BUCKET`        | `--s3-bucket`                  | S3 bucket name                                        | Yes                                    | `""`                                                    |
+| `S3_REGION`        | `--s3-region`                  | S3 region                                             | No                                     | `us-east-1`                                             |
+| `S3_ENDPOINT`      | `--s3-endpoint`                | S3 endpoint URL (for S3-compatible storage)           | No                                     | `""`                                                    |
+| `S3_FILENAME`      | `--s3-filename`                | Specific S3 filename (used only for restore)          | No                                     | `""`                                                    |
 | **Notifications** |                                |                                                       |                                        |                                                         |
-| `pushoverAPIKey`  | `--pushover-api-key`           | Pushover API key                                      | No (but requires user key if set)    | `""`                                                    |
-| `pushoverUserKey` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
+| `PUSHOVER_API_KEY`  | `--pushover-api-key`           | Pushover API key                                      | No (but requires user key if set)    | `""`                                                    |
+| `PUSHOVER_USER_KEY` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
 | **Restore**       |                                |                                                       |                                        |                                                         |
-| `forceRestore`    | `-f`, `--force`                | Force restore operation (restore command only)        | No                                     | `false`                                                 |
+| `FORCE`    | `-f`, `--force`                | Force restore operation (restore command only)        | No                                     | `false`                                                 |
 
 **Required Configuration:**
 
