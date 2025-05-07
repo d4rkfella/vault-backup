@@ -14,7 +14,7 @@ import (
 type mockVaultClientRestore struct {
 	RestoreFn   func(ctx context.Context, r io.Reader) error
 	BackupFn    func(ctx context.Context, w io.Writer) error // Keep for interface completeness if VaultClient is shared
-	writtenData *bytes.Buffer                               // For Backup
+	writtenData *bytes.Buffer                                // For Backup
 }
 
 func (m *mockVaultClientRestore) Backup(ctx context.Context, w io.Writer) error {
@@ -137,8 +137,8 @@ func TestRestore(t *testing.T) {
 				}
 			},
 			vaultClientSetup: func(m *mockVaultClientRestore) {}, // Not called
-			wantErr:            true,
-			expectedErrorMsg:   "s3 resolve error",
+			wantErr:          true,
+			expectedErrorMsg: "s3 resolve error",
 		},
 		{
 			name: "s3client GetObject fails",
@@ -150,11 +150,11 @@ func TestRestore(t *testing.T) {
 					return nil, fmt.Errorf("s3 get object error")
 				}
 			},
-			vaultClientSetup:   func(m *mockVaultClientRestore) {}, // Not called
-			wantErr:            true,
-			expectedErrorMsg:   "s3 get object error",
-			expectedS3GetKey:   "backup-file.snap",
-			checkS3GetObject:   true,
+			vaultClientSetup: func(m *mockVaultClientRestore) {}, // Not called
+			wantErr:          true,
+			expectedErrorMsg: "s3 get object error",
+			expectedS3GetKey: "backup-file.snap",
+			checkS3GetObject: true,
 		},
 		{
 			name: "vaultClient Restore fails",
@@ -185,7 +185,7 @@ func TestRestore(t *testing.T) {
 				}
 				m.GetObjectFn = func(ctx context.Context, key string) (io.ReadCloser, error) {
 					return &mockReadCloser{
-						Reader: strings.NewReader("valid backup data"),
+						Reader:  strings.NewReader("valid backup data"),
 						closeFn: func() error { return fmt.Errorf("reader close error") },
 					}, nil
 				}
@@ -199,7 +199,7 @@ func TestRestore(t *testing.T) {
 			// because it's in a defer. If the main path succeeds, this error is ignored.
 			// This is typical Go behavior unless explicitly handled.
 			// So, wantErr is false. We could add a check to ensure our mockReadCloser.Close was called.
-			wantErr:            false, 
+			wantErr:            false,
 			expectedS3GetKey:   "backup-file.snap",
 			checkS3GetObject:   true,
 			checkVaultRestored: true,
@@ -233,11 +233,11 @@ func TestRestore(t *testing.T) {
 					t.Errorf("S3 GetObject called with key %q, want %q", mockS3.getObjectKey, tt.expectedS3GetKey)
 				}
 			}
-			
+
 			// To properly check if vaultClient.Restore was called, the mock would need a flag.
 			// For now, if no error is wanted and vaultClientSetup implies it should be called,
 			// its successful execution is implicitly part of the test.
 			// If checkVaultRestored is true and an error occurred before vault.Restore, this check is skipped.
 		})
 	}
-} 
+}

@@ -78,7 +78,7 @@ func (m *mockAuthAPI) Login(ctx context.Context, authMethod vault.AuthMethod) (*
 	if m.LoginFunc != nil {
 		return m.LoginFunc(ctx, authMethod)
 	}
-	return &vault.Secret{Auth: &vault.SecretAuth{ClientToken: "mock-k8s-token-from-default-login"}}, nil 
+	return &vault.Secret{Auth: &vault.SecretAuth{ClientToken: "mock-k8s-token-from-default-login"}}, nil
 }
 
 func newTestConfig() *Config {
@@ -98,11 +98,11 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("successful token auth", func(t *testing.T) {
 		cfg := newTestConfig()
-		
+
 		var returnedClient *vault.Client
 		vaultNewClientFunc = func(c *vault.Config) (*vault.Client, error) {
 			vc, err := originalVaultNewClientFunc(c)
-			if err != nil { 
+			if err != nil {
 				// This shouldn't happen in the test if address is valid, but good to propagate
 				return nil, fmt.Errorf("originalVaultNewClientFunc failed: %w", err)
 			}
@@ -120,15 +120,15 @@ func TestNewClient(t *testing.T) {
 		if client.vaultClient == nil {
 			t.Fatal("client.vaultClient is nil")
 		}
-		
+
 		if returnedClient == nil {
-		    t.Fatal("vaultNewClientFunc did not return a client to check")
+			t.Fatal("vaultNewClientFunc did not return a client to check")
 		}
 		if returnedClient.Token() != cfg.Token {
-		    t.Errorf("Expected token %q to be set on underlying client, got %q", cfg.Token, returnedClient.Token())
+			t.Errorf("Expected token %q to be set on underlying client, got %q", cfg.Token, returnedClient.Token())
 		}
 		if returnedClient.Namespace() != DEFAULT_VAULT_NAMESPACE {
-		    t.Errorf("Expected namespace %q, got %q", DEFAULT_VAULT_NAMESPACE, returnedClient.Namespace())
+			t.Errorf("Expected namespace %q, got %q", DEFAULT_VAULT_NAMESPACE, returnedClient.Namespace())
 		}
 		if client.forceRestore != cfg.ForceRestore {
 			t.Errorf("client.forceRestore = %v, want %v", client.forceRestore, cfg.ForceRestore)
@@ -214,13 +214,13 @@ func TestClient_Backup(t *testing.T) {
 func TestClient_Restore(t *testing.T) {
 	ctx := context.Background()
 	testBodyContent := "this is restore data"
-	
+
 	tests := []struct {
-		name           string
-		forceRestore   bool // Value for client.forceRestore
-		simulateError  error // Error to return from mock, nil for success
-		wantErr        bool
-		expectedForce  bool // Expected force flag passed to RaftSnapshotRestoreWithContext
+		name          string
+		forceRestore  bool  // Value for client.forceRestore
+		simulateError error // Error to return from mock, nil for success
+		wantErr       bool
+		expectedForce bool // Expected force flag passed to RaftSnapshotRestoreWithContext
 	}{
 		{
 			name:          "successful restore (force=false)",
@@ -256,7 +256,7 @@ func TestClient_Restore(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockSys := &mockSysAPI{}
 			mockVault := &mockVaultAPI{}
-			mockVault.SysFunc = func() SysAPI { return mockSys } 
+			mockVault.SysFunc = func() SysAPI { return mockSys }
 
 			client := &Client{
 				vaultClient:  mockVault,
@@ -292,4 +292,4 @@ func TestClient_Restore(t *testing.T) {
 			}
 		})
 	}
-} 
+}

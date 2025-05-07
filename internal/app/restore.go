@@ -6,8 +6,7 @@ import (
 	"io"
 )
 
-func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client) error {
-	var err error
+func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client) (err error) {
 	var objReader io.ReadCloser
 	var fileName string
 
@@ -22,7 +21,7 @@ func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client) er
 	if err != nil {
 		return err
 	}
-	defer objReader.Close()
+	defer objReader.Close() //nolint:errcheck
 
 	if err = vaultClient.Restore(ctx, objReader); err != nil {
 		return err

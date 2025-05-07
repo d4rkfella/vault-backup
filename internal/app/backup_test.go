@@ -32,8 +32,8 @@ func TestParseSHA256SUMS(t *testing.T) {
 					"checksum3  another/file.zip\n",
 			),
 			want: map[string]string{
-				"file1.txt":          "checksum1",
-				"file2.txt":          "checksum2",
+				"file1.txt":        "checksum1",
+				"file2.txt":        "checksum2",
 				"another/file.zip": "checksum3",
 			},
 		},
@@ -88,13 +88,13 @@ func TestParseSHA256SUMS(t *testing.T) {
 
 func TestVerifyInternalChecksums(t *testing.T) {
 	tests := []struct {
-		name          string
-		files         []fileEntry
+		name           string
+		files          []fileEntry
 		shaSumsContent string
 		corruptArchive bool // To simulate various archive errors
-		noShaFile     bool   // To simulate missing SHA256SUMS
-		wantErr       bool
-		expectedError string // Optional: check for specific error message substring
+		noShaFile      bool // To simulate missing SHA256SUMS
+		wantErr        bool
+		expectedError  string // Optional: check for specific error message substring
 	}{
 		{
 			name: "valid archive",
@@ -149,9 +149,9 @@ func TestVerifyInternalChecksums(t *testing.T) {
 			expectedError:  "gzip error: gzip: invalid header", // Error from gzip.NewReader
 		},
 		{
-			name:    "empty archive data",
-			files:   []fileEntry{}, // No files
-			shaSumsContent: "", // Empty SHA256SUMS
+			name:           "empty archive data",
+			files:          []fileEntry{}, // No files
+			shaSumsContent: "",            // Empty SHA256SUMS
 			// This will lead to verifyInternalChecksums trying to read an empty byte slice as gzip, causing an error.
 			// If createTestArchive produces empty bytes for this, verifyInternalChecksums gets nil.
 			// The function being tested expects gzipped data, so empty input is an error.
@@ -165,18 +165,18 @@ func TestVerifyInternalChecksums(t *testing.T) {
 			expectedError: "SHA256SUMS file not found in the archive",
 		},
 		{
-			name: "archive with only SHA256SUMS (empty)",
-			files: []fileEntry{}, // No actual files
-			shaSumsContent: "", // Empty SHA256SUMS content
+			name:           "archive with only SHA256SUMS (empty)",
+			files:          []fileEntry{}, // No actual files
+			shaSumsContent: "",            // Empty SHA256SUMS content
 			// verifyInternalChecksums will parse empty sums, find no files to check, and succeed.
 			wantErr: false,
 		},
 		{
-			name: "archive with only SHA256SUMS (non-empty but for non-existent files)",
-			files: []fileEntry{}, // No actual files in tar
+			name:           "archive with only SHA256SUMS (non-empty but for non-existent files)",
+			files:          []fileEntry{}, // No actual files in tar
 			shaSumsContent: generateShaSums([]fileEntry{{name: "ghost.txt", content: "boo"}}),
-			wantErr:       true,
-			expectedError: "file ghost.txt listed in SHA256SUMS not found in archive",
+			wantErr:        true,
+			expectedError:  "file ghost.txt listed in SHA256SUMS not found in archive",
 		},
 		{
 			name: "corrupt tar content (valid gzip)",
@@ -295,12 +295,12 @@ func gzipDataBytes(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// --- Mocks --- 
+// --- Mocks ---
 
 type mockVaultClient struct {
 	BackupFn func(ctx context.Context, w io.Writer) error
 	// To store what was written by the Backup function if needed for assertions
-	writtenData *bytes.Buffer 
+	writtenData *bytes.Buffer
 }
 
 func (m *mockVaultClient) Backup(ctx context.Context, w io.Writer) error {
@@ -320,14 +320,14 @@ func (m *mockVaultClient) Restore(ctx context.Context, r io.Reader) error {
 }
 
 type mockS3Client struct {
-	PutObjectFn    func(ctx context.Context, key string, r io.Reader) error
-	GetObjectFn    func(ctx context.Context, key string) (io.ReadCloser, error)
+	PutObjectFn        func(ctx context.Context, key string, r io.Reader) error
+	GetObjectFn        func(ctx context.Context, key string) (io.ReadCloser, error)
 	ResolveBackupKeyFn func(ctx context.Context) (string, error)
-	
+
 	// To capture arguments for assertions
 	putObjectCalled bool
 	putObjectKey    string
-	putObjectData   []byte 
+	putObjectData   []byte
 }
 
 func (m *mockS3Client) PutObject(ctx context.Context, key string, r io.Reader) error {
@@ -361,7 +361,7 @@ func (m *mockS3Client) ResolveBackupKey(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("ResolveBackupKeyFn not implemented in mock")
 }
 
-// --- TestBackup --- 
+// --- TestBackup ---
 
 func TestBackup(t *testing.T) {
 	// Basic setup for a successful backup to create valid archive data
@@ -375,12 +375,12 @@ func TestBackup(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
+		name             string
 		vaultClientSetup func(m *mockVaultClient) // Setup for vault client mock
-		s3ClientSetup    func(m *mockS3Client)   // Setup for S3 client mock
-		wantErr         bool
-		expectedError   string // Substring of the expected error message
-		checkS3Put      bool   // Whether to check S3 PutObject was called with correct data
+		s3ClientSetup    func(m *mockS3Client)    // Setup for S3 client mock
+		wantErr          bool
+		expectedError    string // Substring of the expected error message
+		checkS3Put       bool   // Whether to check S3 PutObject was called with correct data
 	}{
 		{
 			name: "successful backup",
@@ -475,9 +475,9 @@ func TestBackup(t *testing.T) {
 				// For now, let's ensure the data passed to S3 is what Vault produced.
 				// Note: vaultClient's BackupFn writes `validArchiveData` in the success case.
 				if !bytes.Equal(mockS3.putObjectData, validArchiveData) {
-				    t.Errorf("Data written to S3 does not match data from Vault. S3 got: %d bytes, Vault wrote: %d bytes", len(mockS3.putObjectData), len(validArchiveData))
+					t.Errorf("Data written to S3 does not match data from Vault. S3 got: %d bytes, Vault wrote: %d bytes", len(mockS3.putObjectData), len(validArchiveData))
 				}
 			}
 		})
 	}
-} 
+}

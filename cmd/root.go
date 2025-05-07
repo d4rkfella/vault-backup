@@ -39,7 +39,9 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 	Version:       version,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		if err := cmd.Help(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error displaying help: %v\n", err)
+		}
 	},
 }
 
