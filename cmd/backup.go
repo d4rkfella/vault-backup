@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/d4rkfella/vault-backup/internal/app"
-	"github.com/d4rkfella/vault-backup/internal/pkg/pushover"
 	"github.com/d4rkfella/vault-backup/internal/pkg/s3"
 	"github.com/d4rkfella/vault-backup/internal/pkg/vault"
 	"github.com/spf13/cobra"
@@ -47,34 +44,19 @@ var backupCmd = &cobra.Command{
 			SessionToken:    viper.GetString("s3_session_token"),
 		}
 
-		var pushoverCfg *pushover.Config
-		pkey := viper.GetString("pushover_api_key")
-		ukey := viper.GetString("pushover_user_key")
-		if pkey != "" && ukey != "" {
-			pushoverCfg = &pushover.Config{
-				APIKey:  pkey,
-				UserKey: ukey,
-			}
-		}
-
 		vaultClient, err := vault.NewClient(ctx, vaultCfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize vault client for backup: %w", err)
+			return err
 		}
 
 		s3Client, err := s3.NewClient(ctx, s3Cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize s3 client for backup: %w", err)
+			return err
 		}
 
-		var pushoverClient app.NotifyClient
-		if pushoverCfg != nil {
-			pushoverClient = pushover.NewClient(pushoverCfg)
-		}
-
-		err = runBackup(ctx, vaultClient, s3Client, pushoverClient)
+		err = runBackup(ctx, vaultClient, s3Client)
 		if err != nil {
-			return fmt.Errorf("backup command failed: %w", err)
+			return err
 		}
 		return nil
 	},

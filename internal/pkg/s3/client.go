@@ -2,8 +2,6 @@ package s3
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -26,9 +24,6 @@ type Client struct {
 }
 
 func NewClient(ctx context.Context, cfg *Config) (*Client, error) {
-	if cfg == nil {
-		return nil, errors.New("S3 client config cannot be nil")
-	}
 
 	creds := credentials.NewStaticCredentialsProvider(
 		cfg.AccessKey,
@@ -41,7 +36,7 @@ func NewClient(ctx context.Context, cfg *Config) (*Client, error) {
 		config.WithCredentialsProvider(creds),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load default AWS config: %w", err)
+		return nil, err
 	}
 
 	opts := []func(*s3.Options){}

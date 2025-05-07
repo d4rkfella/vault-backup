@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"io"
-	"time"
 )
 
 type VaultClient interface {
@@ -13,10 +12,6 @@ type VaultClient interface {
 
 type S3Client interface {
 	PutObject(ctx context.Context, key string, r io.Reader) error
-	GetObject(ctx context.Context, key string) (body io.ReadCloser, sizeBytes int64, err error)
+	GetObject(ctx context.Context, key string) (body io.ReadCloser, err error)
 	ResolveBackupKey(ctx context.Context) (string, error)
-}
-
-type NotifyClient interface {
-	Notify(ctx context.Context, success bool, opType string, duration time.Duration, sizeBytes int64, err error, details map[string]string) error
 }

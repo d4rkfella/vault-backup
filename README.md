@@ -8,7 +8,6 @@
 *   **Restore:** Retrieves a specified snapshot (or the latest) from S3 and restores it to Vault.
 *   **S3 Integration:** Uses AWS S3 or any S3-compatible storage (MinIO, Ceph, etc.).
 *   **Authentication:** Supports Vault token and Kubernetes authentication.
-*   **Notifications:** Can send success/failure notifications via Pushover.
 *   **Configuration:** Flexible configuration via command-line flags, environment variables, or a configuration file.
 
 ## Installation
@@ -83,8 +82,6 @@ s3_secret_key: YOUR_S3_SECRET_KEY
 s3_bucket: your-vault-backups-bucket
 s3_region: us-east-1
 # s3_endpoint: http://minio.local:9000 # Optional: for S3-compatible storage
-pushover_api_key: YOUR_PUSHOVER_APP_TOKEN # Optional
-pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 ```
 
 ### Configuration Options
@@ -109,9 +106,6 @@ pushover_user_key: YOUR_PUSHOVER_USER_KEY # Optional
 | `S3_REGION`        | `--s3-region`                  | S3 bucket region                                             | No                                     | `us-east-1`                                             |
 | `S3_ENDPOINT`      | `--s3-endpoint`                | S3 endpoint URL (for S3-compatible storage)           | No                                     | `""`                                                    |
 | `S3_FILENAME`      | `--s3-filename`                | File name of the backup that you want to restore from S3          | No                                     | `""`                                                    |
-| **Notifications** |                                |                                                       |                                        |                                                         |
-| `PUSHOVER_API_KEY`  | `--pushover-api-key`           | Pushover API key                                      | No (but requires user key if set)    | `""`                                                    |
-| `PUSHOVER_USER_KEY` | `--pushover-user-key`          | Pushover user key                                     | No (but requires API key if set)     | `""`                                                    |
 | **Restore**       |                                |                                                       |                                        |                                                         |
 | `FORCE`    | `-f`, `--force`                | Pass force flag to vault restore        | No                                     | `false`                                                 |
 

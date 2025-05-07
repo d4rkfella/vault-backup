@@ -69,40 +69,6 @@ func validateConfig() *ValidationError {
 	if len(vaultSection.Issues) > 0 {
 		err.Sections["Vault Authentication"] = vaultSection
 	}
-
-	notifySection := &ValidationSection{}
-	pushoverAPIKey := viper.GetString("pushover_api_key")
-	pushoverUserKey := viper.GetString("pushover_user_key")
-
-	apiKeyRegex := regexp.MustCompile(`^a[A-Za-z0-9]{29}$`)
-	userKeyRegex := regexp.MustCompile(`^u[A-Za-z0-9]{29}$`)
-
-	if (pushoverAPIKey != "" && pushoverUserKey == "") || (pushoverAPIKey == "" && pushoverUserKey != "") {
-		notifySection.Issues = append(notifySection.Issues, "Both Pushover keys must be provided if one is set (--pushover-api-key, --pushover-user-key)")
-		notifySection.Solutions, notifySection.SettingAdvice = generateStandardFixes([]string{
-			"--pushover-api-key",
-			"--pushover-user-key",
-		})
-		err.Sections["Notifications"] = notifySection
-	} else if pushoverAPIKey != "" && pushoverUserKey != "" {
-		apiKeyValid := apiKeyRegex.MatchString(pushoverAPIKey)
-		userKeyValid := userKeyRegex.MatchString(pushoverUserKey)
-
-		if !apiKeyValid || !userKeyValid {
-			if !apiKeyValid {
-				notifySection.Issues = append(notifySection.Issues, "Pushover API key format is invalid (--pushover-api-key)")
-			}
-			if !userKeyValid {
-				notifySection.Issues = append(notifySection.Issues, "Pushover User key format is invalid (--pushover-user-key)")
-			}
-			notifySection.Solutions = []string{
-				"Pushover API key must start with 'a', User key with 'u'.",
-				"Both keys must be exactly 30 alphanumeric characters (A-Z, a-z, 0-9).",
-			}
-			err.Sections["Notifications"] = notifySection
-		}
-	}
-
 	if len(err.Sections) > 0 {
 		return err
 	}

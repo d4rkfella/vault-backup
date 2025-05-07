@@ -7,12 +7,8 @@ import (
 	vault "github.com/hashicorp/vault/api"
 )
 
-type TokenAPI interface {
-	RevokeSelfWithContext(ctx context.Context, token string) error
-}
-
 type AuthAPI interface {
-	Token() TokenAPI
+	Login(ctx context.Context, authMethod vault.AuthMethod) (*vault.Secret, error)
 }
 
 type SysAPI interface {
@@ -32,17 +28,9 @@ type vaultAPIWrapper struct {
 }
 
 func (w *vaultAPIWrapper) Sys() SysAPI   { return w.Client.Sys() }
-func (w *vaultAPIWrapper) Auth() AuthAPI { return &authAPIWrapper{w.Client.Auth()} }
+func (w *vaultAPIWrapper) Auth() AuthAPI { return w.Client.Auth() }
 
 var _ VaultAPI = (*vaultAPIWrapper)(nil)
 
-type authAPIWrapper struct {
-	*vault.Auth
-}
-
-func (w *authAPIWrapper) Token() TokenAPI { return w.Auth.Token() }
-
-var _ AuthAPI = (*authAPIWrapper)(nil)
-
-var _ TokenAPI = (*vault.TokenAuth)(nil)
+var _ AuthAPI = (*vault.Auth)(nil)
 var _ SysAPI = (*vault.Sys)(nil)

@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/d4rkfella/vault-backup/internal/app"
-	"github.com/d4rkfella/vault-backup/internal/pkg/pushover"
 	"github.com/d4rkfella/vault-backup/internal/pkg/s3"
 	"github.com/d4rkfella/vault-backup/internal/pkg/vault"
 	"github.com/spf13/cobra"
@@ -51,38 +48,19 @@ var restoreCmd = &cobra.Command{
 			FileName:        viper.GetString("s3_filename"),
 		}
 
-		var pushoverCfg *pushover.Config
-		pkey := viper.GetString("pushover_api_key")
-		ukey := viper.GetString("pushover_user_key")
-		if pkey != "" && ukey != "" {
-			pushoverCfg = &pushover.Config{
-				APIKey:  pkey,
-				UserKey: ukey,
-			}
-		}
-
 		vaultClient, err := vault.NewClient(ctx, vaultCfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize vault client for restore: %w", err)
+			return err
 		}
 
 		s3Client, err := s3.NewClient(ctx, s3Cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize s3 client for restore: %w", err)
+			return err
 		}
 
-		var pushoverClient app.NotifyClient
-		if pushoverCfg != nil {
-			pushoverClient = pushover.NewClient(pushoverCfg)
-		}
-
-		if forceRestore {
-			fmt.Println("Force restore option enabled.")
-		}
-
-		err = runRestore(ctx, vaultClient, s3Client, pushoverClient)
+		err = runRestore(ctx, vaultClient, s3Client)
 		if err != nil {
-			return fmt.Errorf("restore command failed: %w", err)
+			return err
 		}
 		return nil
 	},

@@ -13,24 +13,22 @@ import (
 )
 
 var (
-	cfgFile         string
-	vaultAddr       string
-	vaultToken      string
-	vaultNamespace  string
-	vaultTimeout    time.Duration
-	vaultCACert     string
-	k8sAuthEnabled  bool
-	k8sAuthPath     string
-	k8sTokenPath    string
-	k8sRole         string
-	s3AccessKey     string
-	s3SecretKey     string
-	s3Bucket        string
-	s3Region        string
-	s3Endpoint      string
-	s3FileName      string
-	pushoverAPIKey  string
-	pushoverUserKey string
+	cfgFile        string
+	vaultAddr      string
+	vaultToken     string
+	vaultNamespace string
+	vaultTimeout   time.Duration
+	vaultCACert    string
+	k8sAuthEnabled bool
+	k8sAuthPath    string
+	k8sTokenPath   string
+	k8sRole        string
+	s3AccessKey    string
+	s3SecretKey    string
+	s3Bucket       string
+	s3Region       string
+	s3Endpoint     string
+	s3FileName     string
 )
 
 var version = "dev"
@@ -39,13 +37,9 @@ var rootCmd = &cobra.Command{
 	Use:           "vault-backup",
 	Short:         "vault-backup is a CLI tool to backup and restore Vault data using raft snapshots.",
 	SilenceErrors: true,
-	SilenceUsage:  true,
 	Version:       version,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := cmd.Help(); err != nil {
-			fmt.Fprintf(os.Stderr, "error displaying help: %v\n", err)
-			os.Exit(1)
-		}
+		cmd.Help()
 	},
 }
 
@@ -58,7 +52,7 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.vault-backup.yaml)")
 
-	rootCmd.PersistentFlags().StringVarP(&vaultAddr, "vault-address", "a", "http://localhost:8200", "Vault server address")
+	rootCmd.PersistentFlags().StringVarP(&vaultAddr, "vault-address", "a", "", "Vault server address")
 	rootCmd.PersistentFlags().StringVarP(&vaultNamespace, "vault-namespace", "n", "", "Vault namespace")
 	rootCmd.PersistentFlags().StringVarP(&vaultToken, "vault-token", "t", "", "Vault token")
 	rootCmd.PersistentFlags().DurationVar(&vaultTimeout, "vault-timeout", 30*time.Second, "Vault client timeout")
@@ -75,14 +69,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&s3Region, "s3-region", "us-east-1", "S3 region")
 	rootCmd.PersistentFlags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint URL")
 	rootCmd.PersistentFlags().StringVar(&s3FileName, "s3-filename", "", "S3 filename")
-
-	rootCmd.PersistentFlags().StringVar(&pushoverAPIKey, "pushover-api-key", "", "Pushover API key")
-	rootCmd.PersistentFlags().StringVar(&pushoverUserKey, "pushover-user-key", "", "Pushover user key")
-
-	err := rootCmd.MarkPersistentFlagRequired("s3-access-key")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marking flag as required: %v\n", err)
-	}
 
 	bindFlags(rootCmd)
 }

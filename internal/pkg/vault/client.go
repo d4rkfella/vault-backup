@@ -11,7 +11,7 @@ import (
 
 var vaultNewClientFunc = vault.NewClient
 
-const DEFAULT_VAULT_NAMESPACE = "vault"
+const DEFAULT_VAULT_NAMESPACE = "admin"
 
 type Client struct {
 	vaultClient  VaultAPI
@@ -34,9 +34,6 @@ type Config struct {
 }
 
 func NewClient(ctx context.Context, config *Config) (*Client, error) {
-	if config == nil {
-		return nil, fmt.Errorf("config cannot be nil")
-	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
