@@ -31,10 +31,13 @@ var (
 	s3FileName     string
 )
 
+var version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:           "vault-backup",
 	Short:         "vault-backup is a CLI tool to backup and restore Vault data using raft snapshots.",
 	SilenceErrors: true,
+	Version:       version,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := cmd.Help(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error displaying help: %v\n", err)
