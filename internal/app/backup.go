@@ -95,13 +95,16 @@ func parseSHA256SUMS(content []byte) map[string]string {
 }
 
 func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	
 	var err error
 	fileName := fmt.Sprintf("backup-%s.%s", time.Now().Format(TIME_LAYOUT), SNAPSHOT_EXTENSION)
 
 	fmt.Println("Starting backup...")
 
 	var buf bytes.Buffer
-	if err = vaultClient.Backup(ctx, &buf); err != nil {
+	if err = vaultClient.Backup(timeoutCtx, &buf); err != nil {
 		return fmt.Errorf("creating raft snapshot failed: %w", err)
 	}
 
@@ -110,7 +113,7 @@ func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client) err
 		return fmt.Errorf("snapshot verification failed: %w", err)
 	}
 
-	if err = s3Client.PutObject(ctx, fileName, bytes.NewReader(snapshotData)); err != nil {
+	if err = s3Client.PutObject(timeoutCtx, fileName, bytes.NewReader(snapshotData)); err != nil {
 		return fmt.Errorf("s3 upload operation failed: %w", err)
 	}
 

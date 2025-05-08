@@ -35,9 +35,6 @@ type Config struct {
 
 func NewClient(ctx context.Context, config *Config) (*Client, error) {
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
-	defer cancel()
-
 	vaultConfig := vault.DefaultConfig()
 	vaultConfig.Address = config.Address
 
@@ -72,7 +69,7 @@ func NewClient(ctx context.Context, config *Config) (*Client, error) {
 			return nil, fmt.Errorf("unable to initialize Kubernetes auth method: %w", err)
 		}
 
-		authInfo, err := client.Auth().Login(timeoutCtx, k8sAuth)
+		authInfo, err := client.Auth().Login(ctx, k8sAuth)
 		if err != nil {
 			return nil, fmt.Errorf("unable to log in with Kubernetes auth: %w", err)
 		}
