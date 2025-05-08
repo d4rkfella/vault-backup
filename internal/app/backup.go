@@ -97,7 +97,7 @@ func parseSHA256SUMS(content []byte) map[string]string {
 func Backup(ctx context.Context, vaultClient VaultClient, s3Client S3Client) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	
+
 	var err error
 	fileName := fmt.Sprintf("backup-%s.%s", time.Now().Format(TIME_LAYOUT), SNAPSHOT_EXTENSION)
 

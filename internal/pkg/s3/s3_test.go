@@ -2,12 +2,12 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
-	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -57,10 +57,10 @@ func TestNewClient(t *testing.T) {
 }
 
 type mockS3APIClient struct {
-	GetObjectFunc        func(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
-	PutObjectFunc        func(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
-	ListObjectsV2Func    func(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
-	HeadObjectFunc       func(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	GetObjectFunc     func(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObjectFunc     func(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	ListObjectsV2Func func(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	HeadObjectFunc    func(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 func (m *mockS3APIClient) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
@@ -93,7 +93,6 @@ func (m *mockS3APIClient) HeadObject(ctx context.Context, params *s3.HeadObjectI
 
 var _ s3API = (*mockS3APIClient)(nil)
 
-
 func TestClient_GetObject(t *testing.T) {
 	ctx := context.Background()
 	cfg := &Config{
@@ -120,7 +119,11 @@ func TestClient_GetObject(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetObject() error = %v, want nil", err)
 		}
-		defer body.Close()
+		defer func() {
+			if err := body.Close(); err != nil {
+				t.Errorf("failed to close body: %v", err)
+			}
+		}()
 
 		content, readErr := io.ReadAll(body)
 		if readErr != nil {
@@ -167,7 +170,7 @@ func TestClient_PutObject(t *testing.T) {
 			PutObjectFunc: func(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 				capturedBucket = *params.Bucket
 				capturedKey = *params.Key
-				
+
 				bodyBytes, err := io.ReadAll(params.Body)
 				if err != nil {
 					return nil, fmt.Errorf("mock failed to read body: %w", err)
@@ -262,7 +265,7 @@ func TestClient_ResolveBackupKey(t *testing.T) {
 			if err == nil {
 				t.Fatal("ResolveBackupKey() error = nil, want error")
 			}
-			
+
 			expectedPhrasePart1 := "the specified backup file"
 			expectedPhrasePart2 := fmt.Sprintf("'%q' was not found in bucket '%s'", providedFilename, cfg.Bucket)
 
@@ -367,7 +370,8 @@ func TestClient_ResolveBackupKey(t *testing.T) {
 			mockAPI := &mockS3APIClient{
 				ListObjectsV2Func: func(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 					callCount++
-					if callCount == 1 {
+					switch callCount {
+					case 1:
 						return &s3.ListObjectsV2Output{
 							Contents: []types.Object{
 								{Key: aws.String("backup-page1-old.snap"), LastModified: aws.Time(now.Add(-1 * time.Hour))},
@@ -375,7 +379,7 @@ func TestClient_ResolveBackupKey(t *testing.T) {
 							NextContinuationToken: aws.String("nexttoken"),
 							IsTruncated:           aws.Bool(true),
 						}, nil
-					} else if callCount == 2 {
+					case 2:
 						if params.ContinuationToken == nil || *params.ContinuationToken != "nexttoken" {
 							return nil, fmt.Errorf("expected continuation token 'nexttoken', got %v", params.ContinuationToken)
 						}
@@ -385,8 +389,9 @@ func TestClient_ResolveBackupKey(t *testing.T) {
 								{Key: aws.String("backup-page2-older.snap"), LastModified: aws.Time(latestTime.Add(-30 * time.Minute))},
 							},
 						}, nil
+					default:
+						return nil, fmt.Errorf("ListObjectsV2 called too many times (%d)", callCount)
 					}
-					return nil, fmt.Errorf("ListObjectsV2 called too many times")
 				},
 			}
 			client := &Client{s3Client: mockAPI, config: cfg}
@@ -402,4 +407,4 @@ func TestClient_ResolveBackupKey(t *testing.T) {
 			}
 		})
 	})
-} 
+}

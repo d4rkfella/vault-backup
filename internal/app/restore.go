@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"io"
 	"time"
-
 )
 
 func Restore(ctx context.Context, vaultClient VaultClient, s3Client S3Client) (err error) {
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	
+
 	var objReader io.ReadCloser
 	var fileName string
 
