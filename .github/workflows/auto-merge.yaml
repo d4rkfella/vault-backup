@@ -10,7 +10,7 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-24.04
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'd4rkfella/vault-backup'
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: Dependabot metadata
         id: metadata
