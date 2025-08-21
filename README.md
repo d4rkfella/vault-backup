@@ -60,7 +60,7 @@ Restores a Vault Raft snapshot from S3. By default, it finds the *latest* `.snap
 
 **Flags:**
 
-*   `--force`, `-f`: Force the restore operation without prompting (Use with extreme caution!).
+*   `--force`, `-f`: Force the restore operation when the auto-unseal or Shamir keys are not consistent with the snapshot data, which came from a different cluster.
 
 ## Configuration
 
