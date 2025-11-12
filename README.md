@@ -91,7 +91,7 @@ s3_region: us-east-1
 | `CONFIG`         | `--config`                     | config file                                           | No                                     | `$HOME/.vault-backup.yaml`                              |
 | **Vault**         |                                |                                                       |                                        |                                                         |
 | `VAULT_ADDRESS`       | `-a`, `--vault-address`        | Vault server address                                  | No                                     | `http://localhost:8200`                                 |
-| `VAULT_NAMESPACE`  | `-n`, `--vault-namespace`      | Vault namespace to use                                       | No                                     | `""`                                                    |
+| `VAULT_NAMESPACE`  | `-n`, `--vault-namespace`      | Vault namespace to use                                       | No                                     | `admin`                                                    |
 | `VAULT_TOKEN`      | `-t`, `--vault-token`          | Vault authentication token                                           | Yes (if K8s auth not enabled)          | `""`                                                    |
 | `VAULT_TIMEOUT`    | `--vault-timeout`              | Vault client timeout                                  | No                                     | `30s`                                                   |
 | `VAULT_CA_CERT`     | `--vault-ca-cert`              | Path to the Vault CA certificate file                 | No                                     | `""`                                                    |
